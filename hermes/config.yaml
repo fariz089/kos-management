@@ -48,7 +48,7 @@ memory:
 
 # ─── Tools ────────────────────────────────────────────────────────────
 toolsets:
-  - mcp-kos
+  - kos
 tools:
   web_search: false
   terminal: false
