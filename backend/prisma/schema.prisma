@@ -1,0 +1,218 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USERS & AUTH
+// ============================================
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  phone     String?  @unique
+  password  String
+  role      Role     @default(OWNER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  properties Property[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  STAFF
+}
+
+// ============================================
+// PROPERTY (Kos-kosan)
+// ============================================
+model Property {
+  id          String   @id @default(cuid())
+  name        String
+  address     String
+  city        String
+  description String?
+  rules       String?  // Peraturan kos
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rooms       Room[]
+  facilities  Facility[]
+}
+
+model Facility {
+  id         String   @id @default(cuid())
+  name       String   // WiFi, Parkir Motor, Laundry, dll
+  icon       String?  // emoji or icon name
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// ROOMS (Kamar)
+// ============================================
+model Room {
+  id          String     @id @default(cuid())
+  number      String     // Nomor kamar: "101", "A1", dll
+  floor       Int        @default(1)
+  type        RoomType   @default(STANDARD)
+  price       Int        // Harga per bulan (Rupiah)
+  status      RoomStatus @default(AVAILABLE)
+  description String?
+  photos      String[]   // Array URL foto
+  propertyId  String
+  property    Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenants     Tenant[]
+  bills       Bill[]
+}
+
+enum RoomType {
+  STANDARD
+  DELUXE
+  SUITE
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+  RESERVED
+}
+
+// ============================================
+// TENANTS (Penghuni)
+// ============================================
+model Tenant {
+  id          String       @id @default(cuid())
+  name        String
+  phone       String       // WhatsApp number (628xxxx)
+  email       String?
+  ktpNumber   String?      // Nomor KTP
+  ktpPhoto    String?      // URL foto KTP
+  occupation  String?      // Pekerjaan
+  emergency   String?      // Kontak darurat
+  moveInDate  DateTime
+  moveOutDate DateTime?
+  status      TenantStatus @default(ACTIVE)
+  roomId      String
+  room        Room         @relation(fields: [roomId], references: [id])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  bills       Bill[]
+  messages    Message[]
+}
+
+enum TenantStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+// ============================================
+// BILLING (Tagihan)
+// ============================================
+model Bill {
+  id          String      @id @default(cuid())
+  type        BillType    @default(RENT)
+  amount      Int         // Jumlah tagihan (Rupiah)
+  dueDate     DateTime
+  paidAt      DateTime?
+  status      BillStatus  @default(UNPAID)
+  description String?
+  tenantId    String
+  tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  roomId      String
+  room        Room        @relation(fields: [roomId], references: [id])
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  payment     Payment?
+}
+
+enum BillType {
+  RENT       // Sewa bulanan
+  ELECTRIC   // Listrik
+  WATER      // Air
+  WIFI       // Internet
+  OTHER      // Lainnya
+}
+
+enum BillStatus {
+  UNPAID
+  PENDING    // Menunggu konfirmasi pembayaran
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+// ============================================
+// PAYMENTS (Pembayaran via Midtrans)
+// ============================================
+model Payment {
+  id              String        @id @default(cuid())
+  orderId         String        @unique // Midtrans order_id
+  amount          Int
+  method          String?       // qris, bank_transfer, gopay, dll
+  status          PaymentStatus @default(PENDING)
+  midtransId      String?       // Midtrans transaction_id
+  snapToken       String?       // Midtrans snap token
+  snapUrl         String?       // Midtrans snap redirect URL
+  paidAt          DateTime?
+  expiredAt       DateTime?
+  rawNotification Json?         // Raw webhook dari Midtrans
+  billId          String        @unique
+  bill            Bill          @relation(fields: [billId], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXPIRED
+  REFUNDED
+}
+
+// ============================================
+// MESSAGES (Log chat WhatsApp)
+// ============================================
+model Message {
+  id        String          @id @default(cuid())
+  direction MessageDirection
+  channel   String          @default("whatsapp")
+  content   String
+  metadata  Json?           // Extra data (intent, sentiment, dll)
+  tenantId  String?
+  tenant    Tenant?         @relation(fields: [tenantId], references: [id])
+  createdAt DateTime        @default(now())
+}
+
+enum MessageDirection {
+  INBOUND   // Dari penghuni
+  OUTBOUND  // Dari bot/sistem
+}
+
+// ============================================
+// ANNOUNCEMENTS (Pengumuman)
+// ============================================
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  priority  Int      @default(0) // 0=normal, 1=important, 2=urgent
+  sentVia   String[] // ["whatsapp", "dashboard"]
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,58 @@
+# ============================================
+# Hermes Agent — config.yaml
+# Andhata Boarding House WhatsApp Bot
+# ============================================
+
+# ─── Model Provider ───────────────────────────────────────────────────
+# Menggunakan api.codecrafters.id sebagai LLM provider
+model:
+  default: deepseek-v4-flash:free
+  provider: custom
+  base_url: https://api.codecrafters.id/v1
+  api_key: sk-amK3y3QtTrw6Wy5BnwWo86ptQtN3y2TigP70e9ylAF62Y6cJ
+
+custom_providers:
+  - name: Api.codecrafters.id
+    base_url: https://api.codecrafters.id/v1
+    api_key: sk-amK3y3QtTrw6Wy5BnwWo86ptQtN3y2TigP70e9ylAF62Y6cJ
+    model: deepseek-v4-flash:free
+
+# ─── MCP Servers ──────────────────────────────────────────────────────
+# The kos-mcp-server sidecar exposes backend API tools over HTTP
+mcp_servers:
+  kos:
+    url: "http://kos-mcp-server:3100/mcp"
+    # Tools: cek_kamar_kosong, cek_tagihan, info_kos,
+    # buat_link_bayar, log_message
+
+# ─── Gateway (WhatsApp) ──────────────────────────────────────────────
+gateway:
+  whatsapp:
+    enabled: true
+
+# ─── Agent Behavior ──────────────────────────────────────────────────
+agent:
+  reasoning_effort: medium
+  human_delay: true
+  timezone: "Asia/Jakarta"
+
+# ─── Display ─────────────────────────────────────────────────────────
+display:
+  language: id
+  personality: helpful
+
+# ─── Memory ──────────────────────────────────────────────────────────
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+
+# ─── Tools ────────────────────────────────────────────────────────────
+toolsets:
+  - mcp-kos
+tools:
+  web_search: false
+  terminal: false
+  file: false
+  vision: false
+  code_execution: false
+  image_generation: false

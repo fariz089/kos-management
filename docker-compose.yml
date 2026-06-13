@@ -1,0 +1,157 @@
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  db:
+    image: postgres:16-alpine
+    container_name: kos-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-kos_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme_in_production}
+      POSTGRES_DB: ${DB_NAME:-kos_management}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kos_admin} -d ${DB_NAME:-kos_management}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Backend API (Node.js + Express + Prisma)
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kos-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${DB_USER:-kos_admin}:${DB_PASSWORD:-changeme_in_production}@db:5432/${DB_NAME:-kos_management}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-change_this_jwt_secret}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:-}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-false}
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
+      HERMES_API_URL: http://hermes:8642
+      HERMES_WA_BRIDGE_URL: http://hermes:3000
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+      BASE_URL: https://kos.j99t.tech
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+
+  # ============================================
+  # Frontend (React + Vite) — served by Nginx
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: kos-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # ============================================
+  # Nginx Reverse Proxy
+  # kos.j99t.tech → frontend (/)
+  # kos.j99t.tech/api → backend (/api)
+  # kos.j99t.tech/bot → hermes dashboard
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    container_name: kos-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/bot:/usr/share/nginx/html/bot:ro
+    depends_on:
+      - frontend
+      - backend
+
+  # ============================================
+  # Cloudflare Tunnel
+  # Connects kos.j99t.tech → nginx:80
+  # ============================================
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: kos-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - nginx
+
+  # ============================================
+  # Kos MCP Server (sidecar)
+  # Exposes backend API as MCP tools for Hermes
+  # ============================================
+  kos-mcp-server:
+    build:
+      context: ./hermes/mcp-server
+      dockerfile: Dockerfile
+    container_name: kos-mcp-server
+    restart: unless-stopped
+    environment:
+      BACKEND_API_URL: http://backend:4000/api
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
+      MCP_PORT: "3100"
+    ports:
+      - "3100:3100"
+    depends_on:
+      - backend
+
+  # ============================================
+  # Hermes Agent (NousResearch)
+  # Official Docker image — WhatsApp gateway mode
+  # Dashboard on port 9119, API on port 8642
+  #
+  # First run: docker compose run --rm hermes setup
+  # Then:      docker compose up -d
+  # ============================================
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: kos-hermes
+    restart: unless-stopped
+    command: gateway run
+    shm_size: "1g"
+    environment:
+      # LLM Provider
+      OPENROUTER_API_KEY: ${LLM_API_KEY:-}
+      # Dashboard
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      # API Server (optional, for external integrations)
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_KEY: ${HERMES_API_KEY:-changeme}
+    ports:
+      - "3001:9119"   # Dashboard
+      - "8642:8642"   # API server
+    depends_on:
+      - kos-mcp-server
+    volumes:
+      - hermes_data:/opt/data
+      # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
+      - ./hermes/config.yaml:/opt/data/config.yaml
+
+volumes:
+  pgdata:
+  uploads:
+  hermes_data:
