@@ -147,6 +147,7 @@ services:
       - hermes_data:/opt/data
       # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
       - ./hermes/config.yaml:/opt/data/config.yaml
+      - ./hermes/SOUL.md:/opt/data/SOUL.md
 
 volumes:
   pgdata:
