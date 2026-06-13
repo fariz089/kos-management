@@ -83,6 +83,7 @@ services:
     depends_on:
       - frontend
       - backend
+      - hermes
 
   # ============================================
   # Cloudflare Tunnel
@@ -134,7 +135,13 @@ services:
     shm_size: "1g"
     environment:
       # LLM Provider
-      OPENROUTER_API_KEY: ${LLM_API_KEY:-}
+      # Hapus/ganti ini:
+      # OPENROUTER_API_KEY: ${LLM_API_KEY:-}
+
+      # Pakai ini (sesuai config.yaml yang sudah ada):
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
       # Dashboard — bind 0.0.0.0 supaya port 9119 bisa diakses dari host/nginx.
       # Bind non-loopback otomatis mengaktifkan auth gate Hermes, jadi WAJIB
       # set provider basic-auth di bawah — kalau tidak, Hermes menolak start.
@@ -157,6 +164,8 @@ services:
       - kos-mcp-server
     volumes:
       - hermes_data:/opt/data
+      - ./hermes/config.yaml:/opt/config.yaml:ro
+      - ./hermes/SOUL.md:/opt/SOUL.md:ro
 
 volumes:
   pgdata:
