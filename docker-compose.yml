@@ -154,8 +154,10 @@ services:
       - kos-mcp-server
     volumes:
       - hermes_data:/opt/data
-      # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
-      - ./hermes/config.yaml:/opt/data/config.yaml
+      # CATATAN: config.yaml TIDAK lagi di-bind-mount sebagai file tunggal.
+      # Bind-mount file-tunggal membuat os.replace() gagal (EBUSY) saat Hermes
+      # menyimpan config. config.yaml sekarang hidup di dalam volume hermes_data.
+      # Seed awal: lihat instruksi di bawah (docker cp).
 
 volumes:
   pgdata:
