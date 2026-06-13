@@ -56,3 +56,9 @@ tools:
   vision: false
   code_execution: false
   image_generation: false
+
+dashboard:
+  basic_auth:
+    user: admin
+    password: "25cc80b1dd1eb8f38ff3e4fa1990d6356071dae5accabebcfb63e8f4af98f481"
+    secret: "25cc80b1dd1eb8f38ff3e4fa1990d6356071dae5accabebcfb63e8f4af98f481"

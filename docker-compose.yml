@@ -135,9 +135,6 @@ services:
       HERMES_DASHBOARD: "1"
       HERMES_DASHBOARD_HOST: "0.0.0.0"
       HERMES_DASHBOARD_PORT: "9119"
-      DASHBOARD_USER: ${DASHBOARD_USER:-admin}
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-      DASHBOARD_SECRET: ${DASHBOARD_SECRET:-}
       # Gateway
       GATEWAY_ALLOW_ALL_USERS: "true"
       # API Server (optional, for external integrations)
@@ -154,8 +151,6 @@ services:
       # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
       - ./hermes/config.yaml:/opt/data/config.yaml
       - ./hermes/SOUL.md:/opt/data/SOUL.md
-      # Mount .env Hermes supaya dashboard auth & gateway settings persisten
-      - .env:/root/.hermes/.env
 
 volumes:
   pgdata:
