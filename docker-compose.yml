@@ -83,7 +83,6 @@ services:
     depends_on:
       - frontend
       - backend
-      - hermes
 
   # ============================================
   # Cloudflare Tunnel
@@ -160,7 +159,7 @@ services:
       - kos-mcp-server
     volumes:
       - hermes_data:/opt/data
-      - ./hermes/config.yaml:/opt/config.yaml:ro
+      - ./hermes/config.yaml:/opt/data/config.yaml:ro
       - ./hermes/SOUL.md:/opt/data/SOUL.md:ro
 
 volumes:
