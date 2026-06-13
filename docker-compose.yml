@@ -12,8 +12,8 @@ services:
       POSTGRES_DB: ${DB_NAME:-kos_management}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Port 5432 TIDAK di-expose ke host — db hanya diakses internal oleh backend.
-    # (Hindari bentrok dengan postgres lain & lebih aman.)
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kos_admin} -d ${DB_NAME:-kos_management}"]
       interval: 10s
@@ -39,11 +39,10 @@ services:
       MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-false}
       HERMES_API_KEY: ${HERMES_API_KEY:-}
       HERMES_API_URL: http://hermes:8642
-      HERMES_WA_BRIDGE_URL: http://hermes:8642
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+      HERMES_WA_BRIDGE_URL: http://hermes:3000
       BASE_URL: https://kos.j99t.tech
-    # Port backend TIDAK di-expose ke host — diakses internal oleh nginx & mcp.
-    # Untuk debug dari host, expose sementara mis. - "4100:4000".
+    ports:
+      - "4000:4000"
     depends_on:
       db:
         condition: service_healthy
@@ -59,9 +58,8 @@ services:
       dockerfile: Dockerfile
     container_name: kos-frontend
     restart: unless-stopped
-    # Port 3000 TIDAK di-expose ke host — frontend hanya diakses lewat nginx
-    # (http://frontend:80 di internal network). Ini menghindari bentrok dengan
-    # container lain yang sudah pakai 0.0.0.0:3000 (mis. kiva-app).
+    ports:
+      - "3000:80"
     depends_on:
       - backend
 
@@ -112,9 +110,8 @@ services:
       BACKEND_API_URL: http://backend:4000/api
       HERMES_API_KEY: ${HERMES_API_KEY:-}
       MCP_PORT: "3100"
-    # Port 3100 TIDAK di-expose ke host — hanya dipanggil Hermes internal
-    # (http://kos-mcp-server:3100/mcp). Untuk cek health dari host, expose
-    # sementara - "3100:3100".
+    ports:
+      - "3100:3100"
     depends_on:
       - backend
 
@@ -133,23 +130,12 @@ services:
     command: gateway run
     shm_size: "1g"
     environment:
-      # LLM Provider (custom OpenAI-compatible, dibaca dari config.yaml)
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      # Dashboard — bind 0.0.0.0 supaya port 9119 bisa diakses dari host/nginx.
-      # Bind non-loopback otomatis mengaktifkan auth gate Hermes, jadi WAJIB
-      # set provider basic-auth di bawah — kalau tidak, Hermes menolak start.
+      # LLM Provider
+      OPENROUTER_API_KEY: ${LLM_API_KEY:-}
+      # Dashboard
       HERMES_DASHBOARD: "1"
       HERMES_DASHBOARD_HOST: "0.0.0.0"
       HERMES_DASHBOARD_PORT: "9119"
-      # Basic-auth provider (username/password) untuk login dashboard.
-      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${DASHBOARD_USER:-admin}
-      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${DASHBOARD_PASSWORD:-changeme_dashboard}
-      HERMES_SECURITY_SCAN: "false"
-      HERMES_ALLOW_HTTP: "true"
-      # Secret tetap supaya sesi login tidak hilang tiap container restart.
-      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${DASHBOARD_SECRET:-}
       # API Server (optional, for external integrations)
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: "0.0.0.0"
@@ -161,8 +147,8 @@ services:
       - kos-mcp-server
     volumes:
       - hermes_data:/opt/data
+      # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
       - ./hermes/config.yaml:/opt/data/config.yaml
-      - ./hermes/SOUL.md:/opt/data/SOUL.md
 
 volumes:
   pgdata:

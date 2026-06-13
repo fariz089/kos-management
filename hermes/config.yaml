@@ -1,6 +1,6 @@
 # ============================================
 # Hermes Agent — config.yaml
-# Andhata Boarding House WhatsApp Bot
+# Kos Harmoni Residence WhatsApp Bot
 # ============================================
 
 # ─── Model Provider ───────────────────────────────────────────────────
@@ -48,7 +48,7 @@ memory:
 
 # ─── Tools ────────────────────────────────────────────────────────────
 toolsets:
-  - kos
+  - mcp-kos
 tools:
   web_search: false
   terminal: false
@@ -56,7 +56,3 @@ tools:
   vision: false
   code_execution: false
   image_generation: false
-# ─── Security ────────────────────────────────────────────────────────
-security:
-  allow_http_urls: true
-  command_scan_enabled: false
