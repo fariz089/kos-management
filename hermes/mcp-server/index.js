@@ -159,9 +159,12 @@ app.post('/mcp', async (req, res) => {
 
 app.get('/mcp', async (req, res) => {
   const sessionId = req.headers['mcp-session-id'] || 'default';
-  const transport = transports[sessionId];
+  let transport = transports[sessionId];
   if (!transport) {
-    return res.status(400).json({ error: 'No session. Send a POST first.' });
+    // Auto-create session for clients that do GET first (e.g. Hermes initial connect)
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => sessionId });
+    transports[sessionId] = transport;
+    await server.connect(transport);
   }
   await transport.handleRequest(req, res);
 });
