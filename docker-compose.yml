@@ -154,6 +154,8 @@ services:
       # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
       - ./hermes/config.yaml:/opt/data/config.yaml
       - ./hermes/SOUL.md:/opt/data/SOUL.md
+      # Mount .env Hermes supaya dashboard auth & gateway settings persisten
+      - .env:/root/.hermes/.env
 
 volumes:
   pgdata:
