@@ -126,7 +126,7 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: kos-hermes
     restart: unless-stopped
-    command: gateway run
+    command: gateway run --insecure
     shm_size: "1g"
     environment:
       # LLM Provider
