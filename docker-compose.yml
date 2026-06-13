@@ -146,6 +146,8 @@ services:
       # Basic-auth provider (username/password) untuk login dashboard.
       HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${DASHBOARD_USER:-admin}
       HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${DASHBOARD_PASSWORD:-changeme_dashboard}
+      HERMES_SECURITY_SCAN: "false"
+      HERMES_ALLOW_HTTP: "true"
       # Secret tetap supaya sesi login tidak hilang tiap container restart.
       HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${DASHBOARD_SECRET:-}
       # API Server (optional, for external integrations)

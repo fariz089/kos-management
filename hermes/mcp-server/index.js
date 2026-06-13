@@ -1,23 +1,20 @@
 #!/usr/bin/env node
 /**
- * Kos Management — MCP Server (SSE Transport)
- *
- * Menggunakan SSEServerTransport agar kompatibel dengan Hermes Agent
- * yang menggunakan MCP protocol lama (tanpa Mcp-Session-Id header).
+ * Kos Management — MCP Server (Streamable HTTP)
  *
  * Tools:
  *   - cek_kamar_kosong
  *   - cek_tagihan
  *   - info_kos
- *   - booking_kamar
- *   - reset_link_bayar
+ *   - booking_kamar  ← NEW
  *   - buat_link_bayar
- *   - cek_status_bayar
  *   - log_message
+ *
+ * Runs on port 3100 inside Docker.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
 import { z } from 'zod';
 
@@ -82,7 +79,7 @@ server.tool(
 // Tool: booking_kamar
 server.tool(
   'booking_kamar',
-  'Booking / reservasi kamar untuk calon penghuni baru. Buat tenant baru, ubah status kamar jadi RESERVED, dan buat tagihan bulan pertama.',
+  'Booking / reservasi kamar untuk calon penghuni baru. Buat tenant baru, ubah status kamar jadi RESERVED, dan buat tagihan bulan pertama. Panggil setelah calon penghuni konfirmasi mau kamar tertentu.',
   {
     roomId: z.string().describe('ID kamar yang mau dibooking (dari hasil cek_kamar_kosong)'),
     nama: z.string().describe('Nama lengkap calon penghuni'),
@@ -98,7 +95,7 @@ server.tool(
 // Tool: reset_link_bayar
 server.tool(
   'reset_link_bayar',
-  'Reset link pembayaran lama untuk tagihan tertentu agar bisa generate link Midtrans baru.',
+  'Reset link pembayaran lama untuk tagihan tertentu agar bisa generate link Midtrans baru. Panggil ini dulu kalau buat_link_bayar selalu return link yang sama / sudah expired.',
   { billId: z.string().describe('ID tagihan yang mau direset link bayarnya') },
   async ({ billId }) => {
     const result = await callBackend('/reset-payment-link', 'POST', { billId });
@@ -109,7 +106,7 @@ server.tool(
 // Tool: buat_link_bayar
 server.tool(
   'buat_link_bayar',
-  'Buat link pembayaran Midtrans untuk tagihan tertentu.',
+  'Buat link pembayaran Midtrans untuk tagihan tertentu. Panggil setelah booking berhasil atau saat penghuni mau bayar tagihan.',
   { billId: z.string().describe('ID tagihan yang mau dibayar') },
   async ({ billId }) => {
     const result = await callBackend('/create-payment-link', 'POST', { billId });
@@ -120,7 +117,7 @@ server.tool(
 // Tool: cek_status_bayar
 server.tool(
   'cek_status_bayar',
-  'Cek apakah tagihan sudah dibayar atau belum. Bisa juga sinkronkan status pembayaran dari Midtrans.',
+  'Cek apakah tagihan sudah dibayar atau belum. Bisa juga sinkronkan status pembayaran dari Midtrans. SELALU panggil ini kalau penghuni tanya sudah bayar atau belum, atau saat ingin konfirmasi status pembayaran.',
   { billId: z.string().describe('ID tagihan yang mau dicek statusnya') },
   async ({ billId }) => {
     const result = await callBackend('/check-payment', 'POST', { billId });
@@ -143,43 +140,48 @@ server.tool(
   }
 );
 
-// ─── HTTP Server dengan SSE Transport ───────────────────────────────
-// SSEServerTransport kompatibel dengan Hermes (tidak butuh Mcp-Session-Id)
+// ─── HTTP Server with Streamable HTTP transport ──────────────────────
 const app = express();
 app.use(express.json());
 
 const transports = {};
 
-// SSE endpoint — Hermes connect ke sini untuk terima events
-app.get('/mcp', async (req, res) => {
-  const transport = new SSEServerTransport('/mcp/messages', res);
-  transports[transport.sessionId] = transport;
-
-  transport.onclose = () => {
-    delete transports[transport.sessionId];
-  };
-
-  await server.connect(transport);
+app.post('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] || 'default';
+  let transport = transports[sessionId];
+  if (!transport) {
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => sessionId });
+    transports[sessionId] = transport;
+    await server.connect(transport);
+  }
+  await transport.handleRequest(req, res, req.body);
 });
 
-// Message endpoint — Hermes kirim tool calls ke sini
-app.post('/mcp/messages', async (req, res) => {
-  const sessionId = req.query.sessionId;
+app.get('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] || 'default';
   const transport = transports[sessionId];
   if (!transport) {
-    return res.status(400).json({ error: 'Session not found' });
+    return res.status(400).json({ error: 'No session. Send a POST first.' });
   }
-  await transport.handlePostMessage(req, res, req.body);
+  await transport.handleRequest(req, res);
 });
 
-// Health check
+app.delete('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] || 'default';
+  const transport = transports[sessionId];
+  if (transport) {
+    await transport.close();
+    delete transports[sessionId];
+  }
+  res.status(200).json({ ok: true });
+});
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', tools: 8, server: 'kos-management-mcp', transport: 'sse' });
+  res.json({ status: 'ok', tools: 7, server: 'kos-management-mcp' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🔧 Kos MCP Server (SSE) running on http://0.0.0.0:${PORT}/mcp`);
+  console.log(`🔧 Kos MCP Server running on http://0.0.0.0:${PORT}/mcp`);
   console.log(`   Backend: ${BACKEND_URL}`);
-  console.log(`   Transport: SSE (compatible with Hermes)`);
-  console.log(`   Tools: cek_kamar_kosong, cek_tagihan, info_kos, booking_kamar, reset_link_bayar, buat_link_bayar, cek_status_bayar, log_message`);
+  console.log(`   Tools: cek_kamar_kosong, cek_tagihan, info_kos, booking_kamar, reset_link_bayar, buat_link_bayar, log_message`);
 });
