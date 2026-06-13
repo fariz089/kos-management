@@ -77,37 +77,46 @@ openssl rand -hex 32   # jalankan dua kali, pakai untuk JWT_SECRET & HERMES_API_
 3. Di bagian **Public Hostnames** tunnel, arahkan domain kamu (mis. `kos.j99t.tech`) ke service **`http://nginx:80`** (atau `http://localhost:8080` kalau cloudflared jalan di host).
    > Catatan: domain saat ini di-hardcode `kos.j99t.tech` di beberapa file. Kalau ganti domain, lihat bagian [Mengganti Domain](#mengganti-domain).
 
-### 4. Setup awal Hermes (registrasi WhatsApp & config)
-Hermes butuh inisialisasi sekali sebelum jalan sebagai gateway. Jalankan:
-```bash
-docker compose run --rm hermes setup
-```
-Ikuti wizard-nya (pilih provider LLM, dll). Config tersimpan di volume `hermes_data` + file `hermes/config.yaml` yang sudah termount.
+### 4. Set kredensial dashboard bot
+Dashboard Hermes (untuk scan QR & lihat status) di-bind ke `0.0.0.0` supaya bisa diakses dari host/nginx. Bind non-loopback ini **otomatis mengaktifkan auth gate** Hermes — jadi kamu WAJIB mengisi kredensial login, kalau tidak container Hermes menolak start dan log-nya loop pesan *"Refusing to bind dashboard to 0.0.0.0..."*.
 
-> `hermes/config.yaml` sudah disiapkan untuk kos ini (model provider, MCP server `kos`, bahasa `id`, timezone `Asia/Jakarta`). Personality & alur bot ada di `hermes/SOUL.md`.
+Di `.env`, isi:
+```bash
+DASHBOARD_USER=admin
+DASHBOARD_PASSWORD=<password-kuat>
+DASHBOARD_SECRET=<hasil: openssl rand -base64 32>
+```
+> `DASHBOARD_SECRET` membuat sesi login tetap valid setelah container restart. Tanpa itu kamu ter-logout tiap kali Hermes restart.
+
+> **Keamanan akses publik:** basic-auth cocok untuk jaringan tepercaya / di belakang reverse proxy. Karena dashboard ini kebuka lewat domain publik, ia mengekspos API key & data sesi ke siapa pun yang berhasil login — pakai password yang benar-benar kuat. Untuk pengamanan lebih, Hermes mendukung OAuth (Nous Portal) via `hermes dashboard register`.
 
 ### 5. Nyalakan semua service
 ```bash
 docker compose up -d --build
 ```
+Image Hermes ini memakai supervisor (s6) yang **otomatis** menjalankan gateway WhatsApp + dashboard saat container start — jadi **tidak perlu** menjalankan wizard `docker compose run --rm hermes setup` terpisah. Wizard interaktif itu akan tertimbun output dashboard dan tidak bisa dijawab. Konfigurasi cukup lewat dashboard yang sudah ber-auth (langkah 6).
+
 Cek semua healthy:
 ```bash
 docker compose ps
 docker compose logs -f backend     # tunggu "listening on 4000"
+docker compose logs -f hermes      # pastikan TIDAK ada loop "Refusing to bind..."
 ```
 Saat pertama kali, backend otomatis menjalankan `prisma db push` lalu `node prisma/seed.js` (lihat [Database & Seed](#database--seed)).
 
-### 6. Scan QR WhatsApp (aktivasi bot)
-1. Buka dashboard bot: `https://<domain-anda>/bot/` (atau lokal `http://localhost:8080/bot/`)
-2. Untuk QR scan langsung Hermes: buka dashboard Hermes di `http://<server>:3001` (port 3001 → Hermes dashboard 9119).
-   Atau cek log untuk QR di terminal:
+> Kalau log Hermes menampilkan *`Device or resource busy ... config.yaml`*: itu efek versi lama yang me-mount file `config.yaml` tunggal. Compose ini sudah membuangnya — Hermes mengelola config sendiri di volume `hermes_data`.
+
+### 6. Konfigurasi model & MCP, lalu scan QR WhatsApp
+1. Buka dashboard bot: `http://<server>:3001` (atau `https://<domain-anda>/bot/`). Login pakai `DASHBOARD_USER` / `DASHBOARD_PASSWORD`.
+2. Di dashboard: set **provider LLM** (sesuai `LLM_*` di `.env`) dan pastikan **MCP server `kos`** mengarah ke `http://kos-mcp-server:3100/mcp`. Acuan nilai ada di `hermes/config.yaml` & `hermes/SOUL.md`.
+3. Buka tab gateway/WhatsApp untuk menampilkan **QR code**. Atau lihat QR di log:
    ```bash
    docker compose logs -f hermes
    ```
-3. Di HP: **WhatsApp → Setelan → Perangkat Tertaut → Tautkan Perangkat** → scan QR.
-4. Setelah tertaut, bot langsung aktif menerima & membalas chat. Kirim pesan tes dari nomor lain.
+4. Di HP: **WhatsApp → Setelan → Perangkat Tertaut → Tautkan Perangkat** → scan QR.
+5. Setelah tertaut, bot langsung aktif. Kirim pesan tes dari nomor lain.
 
-> WhatsApp pakai sesi multi-device. Sesi tersimpan di volume `hermes_data`, jadi tidak perlu scan ulang setelah restart container. Kalau sesi putus (logout/kebanyakan device), ulangi scan QR.
+> Sesi WhatsApp tersimpan di volume `hermes_data`, jadi tidak perlu scan ulang setelah restart. Kalau sesi putus (logout/kebanyakan device), ulangi scan QR.
 
 ---
 
@@ -224,7 +233,9 @@ curl http://localhost:4000/api/health  # Backend health
 ```
 
 ### Troubleshooting cepat
-- **Bot tidak balas:** cek `docker compose logs -f hermes` — kalau sesi WA logout, scan QR ulang lewat dashboard (`/bot/` atau port 3001).
+- **Hermes loop "Refusing to bind dashboard to 0.0.0.0":** auth gate aktif tapi belum ada provider. Isi `DASHBOARD_USER` + `DASHBOARD_PASSWORD` (+ `DASHBOARD_SECRET`) di `.env`, lalu `docker compose up -d`. Jangan pakai `--insecure` untuk dashboard yang kebuka publik — itu mengekspos API key & data sesi tanpa login.
+- **Hermes "Device or resource busy ... config.yaml":** jangan mount file `config.yaml` tunggal ke `/opt/data` (versi compose ini sudah tidak). Hapus mount itu, `docker compose down`, lalu `docker volume rm kos-management_hermes_data` untuk membersihkan state setup yang korup, lalu `up -d` lagi.
+- **Bot tidak balas:** cek `docker compose logs -f hermes` — kalau sesi WA logout, scan QR ulang lewat dashboard (port 3001 atau `/bot/`).
 - **Tools error / "Backend unavailable":** pastikan `HERMES_API_KEY` sama persis di `.env` (dipakai backend & MCP server), lalu `docker compose restart kos-mcp-server backend`.
 - **Link bayar stuck/expired:** bot bisa pakai `reset_link_bayar` lalu `buat_link_bayar`; atau cek `MIDTRANS_*` key benar & mode (sandbox/produksi) sesuai.
 - **Domain tidak kebuka:** cek `docker compose logs -f cloudflared` dan Public Hostname tunnel mengarah ke `http://nginx:80`.

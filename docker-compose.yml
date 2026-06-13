@@ -133,10 +133,17 @@ services:
     environment:
       # LLM Provider
       OPENROUTER_API_KEY: ${LLM_API_KEY:-}
-      # Dashboard
+      # Dashboard — bind 0.0.0.0 supaya port 9119 bisa diakses dari host/nginx.
+      # Bind non-loopback otomatis mengaktifkan auth gate Hermes, jadi WAJIB
+      # set provider basic-auth di bawah — kalau tidak, Hermes menolak start.
       HERMES_DASHBOARD: "1"
       HERMES_DASHBOARD_HOST: "0.0.0.0"
       HERMES_DASHBOARD_PORT: "9119"
+      # Basic-auth provider (username/password) untuk login dashboard.
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${DASHBOARD_USER:-admin}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${DASHBOARD_PASSWORD:-changeme_dashboard}
+      # Secret tetap supaya sesi login tidak hilang tiap container restart.
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${DASHBOARD_SECRET:-}
       # API Server (optional, for external integrations)
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: "0.0.0.0"
@@ -148,8 +155,6 @@ services:
       - kos-mcp-server
     volumes:
       - hermes_data:/opt/data
-      # Mount tanpa :ro supaya Hermes bisa save config dari dashboard
-      - ./hermes/config.yaml:/opt/data/config.yaml
 
 volumes:
   pgdata:
