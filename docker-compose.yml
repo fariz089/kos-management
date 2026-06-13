@@ -93,6 +93,7 @@ services:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - nginx
+      - hermes
 
   # ============================================
   # Kos MCP Server (sidecar)
