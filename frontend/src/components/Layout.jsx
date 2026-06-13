@@ -29,8 +29,8 @@ export default function Layout() {
         <div className="p-6 flex items-center gap-3 border-b border-emerald-700/50">
           <Building2 size={28} className="text-emerald-300" />
           <div>
-            <h1 className="font-bold text-lg leading-tight">Kos Manager</h1>
-            <p className="text-emerald-300 text-xs">kos.j99t.tech</p>
+            <h1 className="font-bold text-lg leading-tight">Andhata</h1>
+            <p className="text-emerald-300 text-xs">Boarding House</p>
           </div>
         </div>
 

@@ -239,7 +239,7 @@ app.listen(PORT, '0.0.0.0', () => {
           `🏠 *Selamat Datang! Check-in Hari Ini*`,
           ``,
           `Halo ${tenant.name},`,
-          `Jadwal check-in kamu di *${tenant.room.property?.name || 'Kos Harmoni'}* adalah *hari ini*! 🎉`,
+          `Jadwal check-in kamu di *${tenant.room.property?.name || 'Andhata Boarding House'}* adalah *hari ini*! 🎉`,
           ``,
           `📍 Kamar: ${tenant.room.number}`,
           `📍 Alamat: ${tenant.room.property?.address || '-'}`,
