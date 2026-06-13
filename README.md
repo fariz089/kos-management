@@ -74,8 +74,20 @@ openssl rand -hex 32   # jalankan dua kali, pakai untuk JWT_SECRET & HERMES_API_
 ### 3. Cloudflare Tunnel
 1. Buka https://one.dash.cloudflare.com → **Networks → Tunnels → Create a tunnel**
 2. Pilih **Cloudflared**, beri nama, copy **token** → tempel ke `CLOUDFLARE_TUNNEL_TOKEN` di `.env`
-3. Di bagian **Public Hostnames** tunnel, arahkan domain kamu (mis. `kos.j99t.tech`) ke service **`http://nginx:80`** (atau `http://localhost:8080` kalau cloudflared jalan di host).
-   > Catatan: domain saat ini di-hardcode `kos.j99t.tech` di beberapa file. Kalau ganti domain, lihat bagian [Mengganti Domain](#mengganti-domain).
+3. Di tunnel ini, tambahkan **satu** Published application route saja:
+   - Hostname: domain kamu (mis. `kos.j99t.tech`), Path: `*`
+   - Service: **`http://nginx:80`**
+
+   **Cukup satu route ini saja.** Tidak perlu route terpisah untuk backend,
+   frontend, atau bot — nginx yang membagi traffic ke dalam: `/api/` → backend,
+   `/bot/` → halaman bot, `/` → frontend. Cloudflare hanya perlu mengarah ke
+   satu pintu (nginx).
+
+   > `http://nginx:80` resolve karena `cloudflared` & `nginx` ada di Docker
+   > network yang sama. Kalau di server kamu ada **beberapa** tunnel/cloudflared,
+   > pastikan `CLOUDFLARE_TUNNEL_TOKEN` di `.env` adalah token tunnel YANG INI
+   > (yang route-nya mengarah ke nginx kos), bukan tunnel project lain.
+   > Kalau ganti domain, lihat bagian [Mengganti Domain](#mengganti-domain).
 
 ### 4. Set kredensial dashboard bot
 Dashboard Hermes (untuk scan QR & lihat status) di-bind ke `0.0.0.0` supaya bisa diakses dari host/nginx. Bind non-loopback ini **otomatis mengaktifkan auth gate** Hermes — jadi kamu WAJIB mengisi kredensial login, kalau tidak container Hermes menolak start dan log-nya loop pesan *"Refusing to bind dashboard to 0.0.0.0..."*.
@@ -176,15 +188,22 @@ Login dashboard default: `admin@andhata.kos` / `admin123` (ganti segera).
 
 ## Services & Ports
 
-| Service          | Port | Keterangan              |
-|------------------|------|-------------------------|
-| Nginx            | 8080 | Reverse proxy (public)  |
-| Backend API      | 4000 | REST API                |
-| Frontend         | 3000 | React SPA               |
-| Hermes Dashboard | 3001 | Bot dashboard & QR scan |
-| Hermes API       | 8642 | OpenAI-compatible API   |
-| Kos MCP Server   | 3100 | MCP tools (internal)    |
-| PostgreSQL       | 5432 | Database                |
+Hanya 3 port yang di-expose ke host. Sisanya internal Docker network saja
+(menghindari bentrok dengan container lain di server yang sama).
+
+| Service          | Host Port | Internal | Keterangan                          |
+|------------------|-----------|----------|-------------------------------------|
+| Nginx            | **8080**  | 80       | Reverse proxy — tujuan Cloudflare   |
+| Hermes Dashboard | **3001**  | 9119     | Login dashboard & QR scan           |
+| Hermes API       | **8642**  | 8642     | OpenAI-compatible API               |
+| Backend API      | —         | 4000     | Internal (`backend:4000`)           |
+| Frontend         | —         | 80       | Internal (`frontend:80`)            |
+| Kos MCP Server   | —         | 3100     | Internal (`kos-mcp-server:3100`)    |
+| PostgreSQL       | —         | 5432     | Internal (`db:5432`)                |
+
+> Catatan: frontend, backend, db, dan MCP server **tidak** lagi di-publish ke
+> host karena hanya diakses antar-container lewat nama service. Kalau perlu debug
+> dari host, tambahkan `ports:` sementara (contoh ada di komentar compose).
 
 ---
 
@@ -233,6 +252,7 @@ curl http://localhost:4000/api/health  # Backend health
 ```
 
 ### Troubleshooting cepat
+- **`Bind for 0.0.0.0:XXXX failed: port is already allocated`:** ada container lain di server yang sudah pakai port itu. Cek `docker ps -a`. Service internal (frontend/backend/db/mcp) di compose ini sudah tidak publish port ke host. Kalau yang bentrok port host yang masih dipakai (8080/3001/8642), ganti angka sisi kiri, mis. `"8090:80"`.
 - **Hermes loop "Refusing to bind dashboard to 0.0.0.0":** auth gate aktif tapi belum ada provider. Isi `DASHBOARD_USER` + `DASHBOARD_PASSWORD` (+ `DASHBOARD_SECRET`) di `.env`, lalu `docker compose up -d`. Jangan pakai `--insecure` untuk dashboard yang kebuka publik — itu mengekspos API key & data sesi tanpa login.
 - **Hermes "Device or resource busy ... config.yaml":** jangan mount file `config.yaml` tunggal ke `/opt/data` (versi compose ini sudah tidak). Hapus mount itu, `docker compose down`, lalu `docker volume rm kos-management_hermes_data` untuk membersihkan state setup yang korup, lalu `up -d` lagi.
 - **Bot tidak balas:** cek `docker compose logs -f hermes` — kalau sesi WA logout, scan QR ulang lewat dashboard (port 3001 atau `/bot/`).

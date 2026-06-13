@@ -12,8 +12,8 @@ services:
       POSTGRES_DB: ${DB_NAME:-kos_management}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # Port 5432 TIDAK di-expose ke host — db hanya diakses internal oleh backend.
+    # (Hindari bentrok dengan postgres lain & lebih aman.)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kos_admin} -d ${DB_NAME:-kos_management}"]
       interval: 10s
@@ -39,11 +39,11 @@ services:
       MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-false}
       HERMES_API_KEY: ${HERMES_API_KEY:-}
       HERMES_API_URL: http://hermes:8642
-      HERMES_WA_BRIDGE_URL: http://hermes:3000
+      HERMES_WA_BRIDGE_URL: http://hermes:8642
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
       BASE_URL: https://kos.j99t.tech
-    ports:
-      - "4000:4000"
+    # Port backend TIDAK di-expose ke host — diakses internal oleh nginx & mcp.
+    # Untuk debug dari host, expose sementara mis. - "4100:4000".
     depends_on:
       db:
         condition: service_healthy
@@ -59,8 +59,9 @@ services:
       dockerfile: Dockerfile
     container_name: kos-frontend
     restart: unless-stopped
-    ports:
-      - "3000:80"
+    # Port 3000 TIDAK di-expose ke host — frontend hanya diakses lewat nginx
+    # (http://frontend:80 di internal network). Ini menghindari bentrok dengan
+    # container lain yang sudah pakai 0.0.0.0:3000 (mis. kiva-app).
     depends_on:
       - backend
 
@@ -111,8 +112,9 @@ services:
       BACKEND_API_URL: http://backend:4000/api
       HERMES_API_KEY: ${HERMES_API_KEY:-}
       MCP_PORT: "3100"
-    ports:
-      - "3100:3100"
+    # Port 3100 TIDAK di-expose ke host — hanya dipanggil Hermes internal
+    # (http://kos-mcp-server:3100/mcp). Untuk cek health dari host, expose
+    # sementara - "3100:3100".
     depends_on:
       - backend
 
