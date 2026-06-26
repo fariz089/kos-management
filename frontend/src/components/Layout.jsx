@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { Home, DoorOpen, Users, Receipt, LogOut, Menu, X, Building2 } from 'lucide-react';
+import { Home, DoorOpen, Users, Receipt, LogOut, Menu, X, Building2, Tag } from 'lucide-react';
 
 const navItems = [
   { to: '/', icon: Home, label: 'Dashboard' },
   { to: '/rooms', icon: DoorOpen, label: 'Kamar' },
   { to: '/tenants', icon: Users, label: 'Penghuni' },
   { to: '/bills', icon: Receipt, label: 'Tagihan' },
+  { to: '/pricing', icon: Tag, label: 'Harga' },
 ];
 
 export default function Layout() {

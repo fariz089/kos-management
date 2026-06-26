@@ -2,6 +2,7 @@ const express = require('express');
 const midtransClient = require('midtrans-client');
 const prisma = require('../utils/prisma');
 const { hermesAuth } = require('../middleware/auth');
+const { priceForRoom } = require('../utils/pricing');
 
 const router = express.Router();
 
@@ -24,20 +25,30 @@ router.get('/available-rooms', async (req, res) => {
       where: { status: 'AVAILABLE' },
       include: {
         property: { select: { name: true, address: true } },
+        tier: { include: { rules: true } },
       },
       orderBy: { price: 'asc' },
     });
 
-    const formatted = rooms.map(r => ({
-      id: r.id,
-      nomor: r.number,
-      lantai: r.floor,
-      tipe: r.type,
-      harga: `Rp ${r.price.toLocaleString('id-ID')}/bulan`,
-      hargaAngka: r.price,
-      properti: r.property.name,
-      alamat: r.property.address,
-      deskripsi: r.description || '-',
+    const formatted = await Promise.all(rooms.map(async r => {
+      let livePrice = r.price;
+      let priceLabel = null;
+      try {
+        const p = await priceForRoom(r.id, new Date());
+        livePrice = p.price;
+        priceLabel = p.label;
+      } catch (e) { /* fallback */ }
+      return {
+        id: r.id,
+        nomor: r.number,
+        lantai: r.floor,
+        tipe: r.tier?.name || r.type,
+        harga: `Rp ${livePrice.toLocaleString('id-ID')}/bulan${priceLabel ? ` (${priceLabel})` : ''}`,
+        hargaAngka: livePrice,
+        properti: r.property.name,
+        alamat: r.property.address,
+        deskripsi: r.description || '-',
+      };
     }));
 
     res.json({
@@ -319,10 +330,17 @@ router.post('/booking-room', async (req, res) => {
     const dueDate = new Date(parsedMoveIn);
     dueDate.setDate(dueDate.getDate() + 3); // Jatuh tempo 3 hari setelah check-in
 
+    // Harga dinamis berdasarkan tanggal masuk
+    let rentAmount = room.price;
+    try {
+      const p = await priceForRoom(room.id, parsedMoveIn);
+      rentAmount = p.price;
+    } catch (e) { /* fallback ke room.price */ }
+
     const bill = await prisma.bill.create({
       data: {
         type: 'RENT',
-        amount: room.price,
+        amount: rentAmount,
         dueDate,
         status: 'UNPAID',
         description: `Sewa bulan pertama - Kamar ${room.number}`,

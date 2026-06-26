@@ -46,6 +46,7 @@ model Property {
 
   rooms       Room[]
   facilities  Facility[]
+  pricingTiers PricingTier[]
 }
 
 model Facility {
@@ -70,6 +71,8 @@ model Room {
   photos      String[]   // Array URL foto
   propertyId  String
   property    Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tierId      String?    // Tipe harga (A/B/C/D) — menentukan harga dinamis per periode
+  tier        PricingTier? @relation(fields: [tierId], references: [id])
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -104,6 +107,8 @@ model Tenant {
   emergency   String?      // Kontak darurat
   moveInDate  DateTime
   moveOutDate DateTime?
+  depositAmount Int?       // DP / uang muka (Rupiah) — diisi manual saat booking
+  depositPaidAt DateTime?  // Kapan DP lunas
   status      TenantStatus @default(ACTIVE)
   roomId      String
   room        Room         @relation(fields: [roomId], references: [id])
@@ -129,6 +134,7 @@ model Bill {
   amount      Int         // Jumlah tagihan (Rupiah)
   dueDate     DateTime
   paidAt      DateTime?
+  paymentMethod String?   // Cara bayar manual: CASH / TRANSFER (null = via Midtrans/gateway)
   status      BillStatus  @default(UNPAID)
   description String?
   tenantId    String
@@ -143,6 +149,7 @@ model Bill {
 
 enum BillType {
   RENT       // Sewa bulanan
+  DEPOSIT    // DP / uang muka
   ELECTRIC   // Listrik
   WATER      // Air
   WIFI       // Internet
@@ -203,6 +210,40 @@ model Message {
 enum MessageDirection {
   INBOUND   // Dari penghuni
   OUTBOUND  // Dari bot/sistem
+}
+
+// ============================================
+// PRICING TIERS (Tipe harga: A/B/C/D)
+// Memungkinkan harga berbeda per periode (mis. promo Jun-Jul vs harga normal Agustus+)
+// ============================================
+model PricingTier {
+  id          String        @id @default(cuid())
+  name        String        // "Tipe A", "Tipe B", dll
+  code        String        @unique // "A", "B", "C", "D"
+  description String?
+  propertyId  String
+  property    Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  rooms       Room[]
+  rules       PricingRule[]
+}
+
+model PricingRule {
+  id          String      @id @default(cuid())
+  tierId      String
+  tier        PricingTier @relation(fields: [tierId], references: [id], onDelete: Cascade)
+  price       Int         // Harga per bulan (Rupiah) untuk periode ini
+  // Periode berlaku berdasarkan TANGGAL MASUK penghuni.
+  // startDate null = berlaku sejak kapanpun; endDate null = berlaku selamanya.
+  startDate   DateTime?   // Inklusif. Mis. 2026-06-01
+  endDate     DateTime?   // Inklusif. Mis. 2026-07-31 (null = seterusnya)
+  label       String?     // "Promo Juni-Juli", "Harga Normal", dll
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([tierId])
 }
 
 // ============================================

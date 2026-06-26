@@ -1,8 +1,27 @@
 const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
+const { priceForRoom } = require('../utils/pricing');
 
 const router = express.Router();
+
+async function sendWhatsApp(phone, message) {
+  try {
+    let p = String(phone).replace(/\D/g, '');
+    if (p.startsWith('0')) p = '62' + p.slice(1);
+    if (!p.startsWith('62')) p = '62' + p;
+    const bridgeUrl = process.env.HERMES_WA_BRIDGE_URL || 'http://hermes:3000';
+    const response = await fetch(`${bridgeUrl}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId: `${p}@s.whatsapp.net`, message }),
+    });
+    return response.ok;
+  } catch (e) {
+    console.error('WA send error (bills, non-blocking):', e.message);
+    return false;
+  }
+}
 
 // GET /api/bills
 router.get('/', authMiddleware, async (req, res) => {
@@ -86,10 +105,17 @@ router.post('/generate-monthly', authMiddleware, async (req, res) => {
       });
 
       if (!existing) {
+        // Harga dinamis berdasarkan tanggal masuk penghuni
+        let rentAmount = tenant.room.price;
+        try {
+          const p = await priceForRoom(tenant.roomId, tenant.moveInDate);
+          rentAmount = p.price;
+        } catch (e) { /* fallback ke room.price */ }
+
         const bill = await prisma.bill.create({
           data: {
             type: 'RENT',
-            amount: tenant.room.price,
+            amount: rentAmount,
             dueDate,
             description: `Sewa kamar ${tenant.room.number} — ${month}/${year}`,
             tenantId: tenant.id,
@@ -130,6 +156,72 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     await prisma.payment.deleteMany({ where: { billId: req.params.id } });
     await prisma.bill.delete({ where: { id: req.params.id } });
     res.json({ message: 'Tagihan dihapus' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/bills/:id/mark-paid — Catat pembayaran MANUAL (cash / transfer langsung)
+// Tanpa payment gateway. Body: { method: 'CASH' | 'TRANSFER' }
+router.post('/:id/mark-paid', authMiddleware, async (req, res) => {
+  try {
+    const method = (req.body.method || 'CASH').toUpperCase();
+    if (!['CASH', 'TRANSFER'].includes(method)) {
+      return res.status(400).json({ error: "method harus 'CASH' atau 'TRANSFER'" });
+    }
+
+    const bill = await prisma.bill.update({
+      where: { id: req.params.id },
+      data: { status: 'PAID', paidAt: new Date(), paymentMethod: method },
+      include: { tenant: true, room: { include: { property: true } } },
+    });
+
+    // Kalau ini tagihan DP, tandai depositPaidAt
+    if (bill.type === 'DEPOSIT' && bill.tenantId) {
+      await prisma.tenant.update({
+        where: { id: bill.tenantId },
+        data: { depositPaidAt: new Date() },
+      }).catch(() => {});
+    }
+
+    // Aktivasi penghuni PENDING kalau semua tagihan wajib (DP + sewa pertama) sudah lunas
+    let activated = false;
+    if (bill.tenant?.status === 'PENDING') {
+      const outstanding = await prisma.bill.count({
+        where: { tenantId: bill.tenantId, status: { in: ['UNPAID', 'OVERDUE', 'PENDING'] } },
+      });
+      if (outstanding === 0) {
+        await prisma.tenant.update({ where: { id: bill.tenantId }, data: { status: 'ACTIVE' } });
+        await prisma.room.update({ where: { id: bill.roomId }, data: { status: 'OCCUPIED' } });
+        activated = true;
+      }
+    }
+
+    // Notifikasi WhatsApp (non-blocking)
+    if (bill.tenant?.phone) {
+      const amt = `Rp ${bill.amount.toLocaleString('id-ID')}`;
+      const tipe = bill.type === 'RENT' ? 'Sewa Kamar' : bill.type === 'DEPOSIT' ? 'DP / Uang Muka' : bill.type;
+      const metodeStr = method === 'CASH' ? 'Tunai (Cash)' : 'Transfer';
+      const lines = [
+        `✅ *Pembayaran Diterima*`,
+        ``,
+        `Halo ${bill.tenant.name},`,
+        `Pembayaran kamu sudah kami terima & catat:`,
+        ``,
+        `• Tagihan: ${tipe}`,
+        `• Kamar: ${bill.room.number}`,
+        `• Jumlah: ${amt}`,
+        `• Metode: ${metodeStr}`,
+      ];
+      if (activated) {
+        lines.push(``);
+        lines.push(`Semua pembayaran sudah lunas! Silakan datang ke ${bill.room.property?.name || 'kos'} untuk serah terima kunci. 🔑`);
+      }
+      lines.push(``, `Terima kasih! 🙏`);
+      sendWhatsApp(bill.tenant.phone, lines.join('\n'));
+    }
+
+    res.json({ ...bill, activated });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw, Banknote } from 'lucide-react';
 
 const BILL_TYPES = ['RENT', 'ELECTRIC', 'WATER', 'WIFI', 'OTHER'];
 const STATUS_COLORS = {
@@ -83,6 +83,27 @@ export default function Bills() {
       alert('Gagal cek status: ' + error.message);
     },
   });
+
+  // Pembayaran manual (cash / transfer langsung ke rekening owner) — tanpa payment gateway
+  const markPaid = useMutation({
+    mutationFn: ({ billId, method }) => api.post(`/bills/${billId}/mark-paid`, { method }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['bills'] });
+      qc.invalidateQueries({ queryKey: ['tenants'] });
+      qc.invalidateQueries({ queryKey: ['rooms'] });
+      alert(data.activated
+        ? '✅ Lunas dicatat. Semua tagihan beres — penghuni kini Aktif & kamar Terisi.'
+        : '✅ Pembayaran manual dicatat sebagai LUNAS.');
+    },
+    onError: (error) => alert('Gagal mencatat pembayaran: ' + error.message),
+  });
+
+  const handleMarkPaid = (billId) => {
+    const choice = window.prompt('Catat pembayaran manual sebagai LUNAS.\nKetik metode: "cash" atau "transfer"', 'cash');
+    if (!choice) return;
+    const method = choice.trim().toLowerCase() === 'transfer' ? 'TRANSFER' : 'CASH';
+    markPaid.mutate({ billId, method });
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -170,10 +191,17 @@ export default function Bills() {
                           </button>
                         )}
                         {(b.status === 'UNPAID' || b.status === 'OVERDUE') && (
-                          <button onClick={() => payBill.mutate(b.id)} title="Buat link bayar"
+                          <button onClick={() => payBill.mutate(b.id)} title="Buat link bayar (Midtrans)"
                             disabled={payBill.isPending}
                             className="p-2 hover:bg-emerald-50 rounded-lg">
                             <CreditCard size={15} className="text-emerald-600" />
+                          </button>
+                        )}
+                        {b.status !== 'PAID' && b.status !== 'CANCELLED' && (
+                          <button onClick={() => handleMarkPaid(b.id)} title="Tandai lunas manual (cash/transfer)"
+                            disabled={markPaid.isPending}
+                            className="p-2 hover:bg-green-50 rounded-lg">
+                            <Banknote size={15} className="text-green-700" />
                           </button>
                         )}
                         <button onClick={() => { if (confirm('Hapus tagihan ini?')) del.mutate(b.id); }}

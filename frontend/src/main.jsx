@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import Rooms from './pages/Rooms';
 import Tenants from './pages/Tenants';
 import Bills from './pages/Bills';
+import Pricing from './pages/Pricing';
 import PaymentFinish from './pages/PaymentFinish';
 import Layout from './components/Layout';
 
@@ -38,6 +39,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             <Route path="rooms" element={<Rooms />} />
             <Route path="tenants" element={<Tenants />} />
             <Route path="bills" element={<Bills />} />
+            <Route path="pricing" element={<Pricing />} />
           </Route>
         </Routes>
       </BrowserRouter>

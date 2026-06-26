@@ -11,6 +11,7 @@ const billRoutes = require('./routes/bills');
 const paymentRoutes = require('./routes/payments');
 const dashboardRoutes = require('./routes/dashboard');
 const hermesRoutes = require('./routes/hermes');
+const pricingRoutes = require('./routes/pricing');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -43,6 +44,7 @@ app.use('/api/bills', billRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/hermes', hermesRoutes); // API for Hermes Agent tools
+app.use('/api/pricing', pricingRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -252,8 +254,33 @@ app.listen(PORT, '0.0.0.0', () => {
       }
 
       // ──────────────────────────────────────────────────────────────
-      // 5. AUTO-GENERATE TAGIHAN BULANAN (tanggal 1 setiap bulan)
+      // 4b. PENGINGAT MAU KELUAR KOS (H-3 sebelum tanggal keluar)
       // ──────────────────────────────────────────────────────────────
+      const moveOutSoon = await prisma.tenant.findMany({
+        where: {
+          status: 'ACTIVE',
+          moveOutDate: { gte: in3days, lt: in4days },
+        },
+        include: { room: { include: { property: true } } },
+      });
+
+      for (const tenant of moveOutSoon) {
+        const outDate = tenant.moveOutDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+        await sendWA(tenant.phone, [
+          `📦 *Pengingat: Jadwal Keluar Kos*`,
+          ``,
+          `Halo ${tenant.name},`,
+          `Sesuai data kami, jadwal kamu keluar dari kamar *${tenant.room.number}* adalah *${outDate}* (3 hari lagi).`,
+          ``,
+          `Mohon pastikan:`,
+          `• Semua tagihan sudah lunas`,
+          `• Kamar dirapikan & kunci dikembalikan`,
+          ``,
+          `Kalau ada perubahan rencana, kabari kami ya. Terima kasih sudah tinggal di ${tenant.room.property?.name || 'kos'}! 🙏`,
+        ].join('\n'));
+        sentCount++;
+        await delay(2000);
+      }
       if (today.getDate() === 1) {
         const month = today.getMonth() + 1;
         const year = today.getFullYear();
@@ -263,6 +290,8 @@ app.listen(PORT, '0.0.0.0', () => {
           where: { status: { in: ['ACTIVE', 'PENDING'] } },
           include: { room: true },
         });
+
+        const { priceForRoom } = require('./utils/pricing');
 
         let generated = 0;
         for (const tenant of activeTenants) {
@@ -276,10 +305,17 @@ app.listen(PORT, '0.0.0.0', () => {
           });
           if (existing) continue;
 
+          // Harga dinamis berdasarkan tanggal masuk penghuni
+          let rentAmount = tenant.room.price;
+          try {
+            const p = await priceForRoom(tenant.roomId, tenant.moveInDate);
+            rentAmount = p.price;
+          } catch (e) { /* fallback ke room.price */ }
+
           await prisma.bill.create({
             data: {
               type: 'RENT',
-              amount: tenant.room.price,
+              amount: rentAmount,
               dueDate,
               description: `Sewa kamar ${tenant.room.number} — ${month}/${year}`,
               tenantId: tenant.id,
@@ -289,7 +325,7 @@ app.listen(PORT, '0.0.0.0', () => {
           generated++;
 
           // Notify tenant about new bill
-          const amt = `Rp ${tenant.room.price.toLocaleString('id-ID')}`;
+          const amt = `Rp ${rentAmount.toLocaleString('id-ID')}`;
           const dueDateStr = dueDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
           await sendWA(tenant.phone, [
             `📋 *Tagihan Baru Bulan ${month}/${year}*`,
