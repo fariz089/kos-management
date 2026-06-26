@@ -87,10 +87,18 @@ export default function Rooms() {
                 <span className={`px-3 py-1 rounded-lg text-xs font-medium ${STATUS_COLORS[r.status]}`}>{r.status}</span>
               </div>
               <div className="space-y-1 text-sm text-slate-600 mb-4">
-                <p>Lantai {r.floor} — {r.type}</p>
-                <p className="font-semibold text-emerald-600">Rp {Number(r.price).toLocaleString('id-ID')}/bulan</p>
+                <p>Lantai {r.floor} — {r.tier?.name || r.type}</p>
+                <p className="font-semibold text-emerald-600">
+                  Rp {Number(r.displayPrice ?? r.price).toLocaleString('id-ID')}/bulan
+                </p>
+                {r.displayLabel && <p className="text-xs text-emerald-500">{r.displayLabel}</p>}
                 {r.facilities?.length > 0 && <p className="text-xs text-slate-400">{r.facilities.join(', ')}</p>}
-                {r.tenants?.[0] && <p className="text-xs text-blue-600">👤 {r.tenants[0].name}</p>}
+                {r.tenants?.[0] && (
+                  <p className="text-xs text-blue-600">
+                    👤 {r.tenants[0].name}
+                    {r.tenants[0].moveInDate && <span className="text-slate-400"> · masuk {new Date(r.tenants[0].moveInDate).toLocaleDateString('id-ID')}</span>}
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
                 <button onClick={() => openEdit(r)} className="flex-1 py-2 text-sm bg-slate-100 text-slate-700 rounded-xl hover:bg-slate-200 transition-all flex items-center justify-center gap-1">

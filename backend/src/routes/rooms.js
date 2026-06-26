@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
+const { priceForRoom } = require('../utils/pricing');
 
 const router = express.Router();
 
@@ -20,15 +21,56 @@ router.get('/', authMiddleware, async (req, res) => {
       where,
       include: {
         property: { select: { name: true } },
+        tier: { include: { rules: true } },
         tenants: {
-          where: { status: 'ACTIVE' },
-          select: { id: true, name: true, phone: true },
+          where: { status: { in: ['ACTIVE', 'PENDING'] } },
+          select: { id: true, name: true, phone: true, moveInDate: true, status: true },
+          orderBy: { moveInDate: 'desc' },
         },
       },
       orderBy: [{ property: { name: 'asc' } }, { number: 'asc' }],
     });
 
-    res.json(rooms);
+    // Hitung harga date-aware untuk tiap kamar
+    const enriched = await Promise.all(rooms.map(async (r) => {
+      // Harga aktif HARI INI (untuk kamar kosong)
+      let currentPrice = r.price;
+      let currentLabel = null;
+      try {
+        const today = await priceForRoom(r.id, new Date());
+        currentPrice = today.price;
+        currentLabel = today.label;
+      } catch (e) { /* fallback */ }
+
+      // Harga sesuai TANGGAL MASUK penghuni aktif (untuk kamar terisi)
+      const occupant = r.tenants[0] || null;
+      let tenantPrice = null;
+      let tenantPriceLabel = null;
+      if (occupant) {
+        try {
+          const p = await priceForRoom(r.id, occupant.moveInDate);
+          tenantPrice = p.price;
+          tenantPriceLabel = p.label;
+        } catch (e) { /* fallback */ }
+      }
+
+      // Harga yang DITAMPILKAN: kalau terisi pakai harga penghuni, kalau kosong pakai harga hari ini
+      const displayPrice = occupant && tenantPrice != null ? tenantPrice : currentPrice;
+      const displayLabel = occupant && tenantPrice != null ? tenantPriceLabel : currentLabel;
+
+      return {
+        ...r,
+        tier: r.tier ? { id: r.tier.id, name: r.tier.name, code: r.tier.code } : null,
+        currentPrice,
+        currentLabel,
+        tenantPrice,
+        tenantPriceLabel,
+        displayPrice,
+        displayLabel,
+      };
+    }));
+
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

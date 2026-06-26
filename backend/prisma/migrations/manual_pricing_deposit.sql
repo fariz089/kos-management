@@ -115,15 +115,17 @@ UPDATE "Room" SET "tierId"='tier-andhata-C' WHERE "propertyId"='prop-andhata-001
 -- Tipe D (10): A-01, A-05, A-06, A-08, B-01, B-03, B-06, B-08, B-09, B-11
 UPDATE "Room" SET "tierId"='tier-andhata-D' WHERE "propertyId"='prop-andhata-001' AND "number" IN ('A-01','A-05','A-06','A-08','B-01','B-03','B-06','B-08','B-09','B-11');
 
--- 8d. Selaraskan kolom Room.price dengan harga AKTIF hari ini (opsional tapi rapi).
---     Ini membuat tampilan & fallback konsisten. Harga akan tetap dihitung dinamis
---     berdasarkan tanggal masuk saat booking/generate tagihan.
+-- 8d. Set kolom Room.price ke harga NORMAL (jangka panjang) sebagai fallback.
+--     PENTING: jangan pakai harga promo di sini, karena Room.price adalah nilai
+--     statis yang dipakai sebagai fallback. Harga sebenarnya tetap dihitung dinamis
+--     (date-aware) berdasarkan tanggal masuk penghuni saat booking/generate tagihan
+--     dan saat ditampilkan di kartu kamar.
+--     Harga normal = rule yang startDate-nya paling akhir / tanpa endDate.
 UPDATE "Room" r
 SET "price" = pr."price"
 FROM "PricingRule" pr
 WHERE r."tierId" = pr."tierId"
-  AND (pr."startDate" IS NULL OR pr."startDate" <= NOW())
-  AND (pr."endDate"   IS NULL OR pr."endDate"   >= NOW());
+  AND pr."endDate" IS NULL;  -- rule "Harga Normal" (berlaku seterusnya)
 
 COMMIT;
 

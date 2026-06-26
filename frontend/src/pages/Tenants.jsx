@@ -169,7 +169,7 @@ export default function Tenants() {
                     <option value={form.roomId}>Kamar {rooms.find(r => r.id === form.roomId)?.number || form.roomId} (current)</option>
                   )}
                   {availableRooms.map(r => (
-                    <option key={r.id} value={r.id}>Kamar {r.number} — {r.type} (Rp {Number(r.price).toLocaleString('id-ID')})</option>
+                    <option key={r.id} value={r.id}>Kamar {r.number} — {r.tier?.name || r.type} (Rp {Number(r.displayPrice ?? r.price).toLocaleString('id-ID')})</option>
                   ))}
                 </select>
               </div>
