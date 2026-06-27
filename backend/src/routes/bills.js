@@ -47,7 +47,12 @@ router.get('/', authMiddleware, async (req, res) => {
       },
       orderBy: { dueDate: 'desc' },
     });
-    res.json(bills);
+    // Tambahkan sisa kurang bayar (remaining) untuk tiap tagihan
+    const enriched = bills.map(b => ({
+      ...b,
+      remaining: Math.max(0, b.amount - (b.paidAmount || 0)),
+    }));
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -172,9 +177,12 @@ router.post('/:id/mark-paid', authMiddleware, async (req, res) => {
 
     const bill = await prisma.bill.update({
       where: { id: req.params.id },
-      data: { status: 'PAID', paidAt: new Date(), paymentMethod: method },
+      data: { status: 'PAID', paidAt: new Date(), paymentMethod: method, paidAmount: undefined },
       include: { tenant: true, room: { include: { property: true } } },
     });
+
+    // Set paidAmount = amount (lunas penuh)
+    await prisma.bill.update({ where: { id: bill.id }, data: { paidAmount: bill.amount } }).catch(() => {});
 
     // Kalau ini tagihan DP, tandai depositPaidAt
     if (bill.type === 'DEPOSIT' && bill.tenantId) {
@@ -222,6 +230,88 @@ router.post('/:id/mark-paid', authMiddleware, async (req, res) => {
     }
 
     res.json({ ...bill, activated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/bills/:id/pay-partial — Catat pembayaran SEBAGIAN (DP / cicilan, bebas nominal)
+// Body: { amount: number, method: 'CASH' | 'TRANSFER' }
+// paidAmount bertambah; status jadi PARTIAL (kalau belum penuh) atau PAID (kalau lunas).
+router.post('/:id/pay-partial', authMiddleware, async (req, res) => {
+  try {
+    const addAmount = Number(req.body.amount);
+    const method = (req.body.method || 'CASH').toUpperCase();
+    if (!addAmount || addAmount <= 0) {
+      return res.status(400).json({ error: 'Nominal pembayaran harus lebih dari 0' });
+    }
+    if (!['CASH', 'TRANSFER'].includes(method)) {
+      return res.status(400).json({ error: "method harus 'CASH' atau 'TRANSFER'" });
+    }
+
+    const current = await prisma.bill.findUnique({ where: { id: req.params.id } });
+    if (!current) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
+
+    const newPaid = Math.min(current.amount, (current.paidAmount || 0) + addAmount);
+    const lunas = newPaid >= current.amount;
+    const remaining = Math.max(0, current.amount - newPaid);
+
+    const bill = await prisma.bill.update({
+      where: { id: req.params.id },
+      data: {
+        paidAmount: newPaid,
+        status: lunas ? 'PAID' : 'PARTIAL',
+        paymentMethod: method,
+        ...(lunas ? { paidAt: new Date() } : {}),
+      },
+      include: { tenant: true, room: { include: { property: true } } },
+    });
+
+    // Kalau tagihan DP & sudah lunas penuh, tandai depositPaidAt
+    if (lunas && bill.type === 'DEPOSIT' && bill.tenantId) {
+      await prisma.tenant.update({
+        where: { id: bill.tenantId },
+        data: { depositPaidAt: new Date() },
+      }).catch(() => {});
+    }
+
+    // Aktivasi penghuni PENDING kalau SEMUA tagihan wajib sudah lunas
+    let activated = false;
+    if (bill.tenant?.status === 'PENDING') {
+      const outstanding = await prisma.bill.count({
+        where: { tenantId: bill.tenantId, status: { in: ['UNPAID', 'OVERDUE', 'PENDING', 'PARTIAL'] } },
+      });
+      if (outstanding === 0) {
+        await prisma.tenant.update({ where: { id: bill.tenantId }, data: { status: 'ACTIVE' } });
+        await prisma.room.update({ where: { id: bill.roomId }, data: { status: 'OCCUPIED' } });
+        activated = true;
+      }
+    }
+
+    // Notifikasi WhatsApp (non-blocking)
+    if (bill.tenant?.phone) {
+      const metodeStr = method === 'CASH' ? 'Tunai (Cash)' : 'Transfer';
+      const lines = [
+        lunas ? `✅ *Pembayaran Lunas*` : `💰 *Pembayaran Sebagian Diterima*`,
+        ``,
+        `Halo ${bill.tenant.name},`,
+        `Pembayaran kamu sudah kami catat:`,
+        ``,
+        `• Kamar: ${bill.room.number}`,
+        `• Dibayar sekarang: Rp ${addAmount.toLocaleString('id-ID')} (${metodeStr})`,
+        `• Total dibayar: Rp ${newPaid.toLocaleString('id-ID')} dari Rp ${bill.amount.toLocaleString('id-ID')}`,
+      ];
+      if (!lunas) {
+        lines.push(`• *Sisa kurang bayar: Rp ${remaining.toLocaleString('id-ID')}*`);
+      }
+      if (activated) {
+        lines.push(``, `Semua pembayaran sudah lunas! Silakan datang ke ${bill.room.property?.name || 'kos'} untuk serah terima kunci. 🔑`);
+      }
+      lines.push(``, `Terima kasih! 🙏`);
+      sendWhatsApp(bill.tenant.phone, lines.join('\n'));
+    }
+
+    res.json({ ...bill, activated, remaining, paidNow: addAmount });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

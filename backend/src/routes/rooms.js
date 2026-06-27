@@ -76,6 +76,46 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/rooms/occupancy?year=YYYY — data kalender hunian per kamar (semua penghuni)
+router.get('/occupancy/calendar', authMiddleware, async (req, res) => {
+  try {
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const rooms = await prisma.room.findMany({
+      where: { property: { ownerId: req.user.id } },
+      include: {
+        tier: { select: { code: true, name: true } },
+        tenants: {
+          where: { status: { in: ['ACTIVE', 'PENDING', 'INACTIVE'] } },
+          select: { id: true, name: true, phone: true, moveInDate: true, moveOutDate: true, status: true },
+          orderBy: { moveInDate: 'asc' },
+        },
+      },
+      orderBy: { number: 'asc' },
+    });
+
+    const data = rooms.map(r => ({
+      id: r.id,
+      number: r.number,
+      floor: r.floor,
+      type: r.type,
+      tier: r.tier ? { code: r.tier.code, name: r.tier.name } : null,
+      status: r.status,
+      tenants: r.tenants.map(t => ({
+        id: t.id,
+        name: t.name,
+        phone: t.phone,
+        status: t.status,
+        moveInDate: t.moveInDate,
+        moveOutDate: t.moveOutDate,
+      })),
+    }));
+
+    res.json({ year, rooms: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/rooms/:id
 router.get('/:id', authMiddleware, async (req, res) => {
   try {

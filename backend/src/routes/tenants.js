@@ -70,24 +70,39 @@ router.post('/', authMiddleware, async (req, res) => {
     const {
       name, phone, email, ktpNumber, occupation, emergency,
       moveInDate, moveOutDate, roomId,
-      depositAmount,          // DP / uang muka (diisi manual saat booking)
+      depositAmount,          // DP / uang muka — BEBAS nominal (boleh berapa saja)
       status,                 // opsional override; default tergantung ada DP/tidak
-      createBills = true,     // buat tagihan otomatis (DP + sewa bln pertama)
-      rentAmount,             // opsional override harga sewa; default = harga dinamis
+      createBills = true,     // buat tagihan otomatis (sewa kontrak)
+      rentAmount,             // opsional override harga sewa/bulan; default = harga dinamis
+      durationMonths,         // lama sewa (bulan). default 1
+      discountAmount,         // nominal diskon (Rupiah). default 0
+      discountType,           // 'TOTAL' (potong sekali) | 'PER_MONTH' (potong tiap bulan)
     } = req.body;
 
-    // Harga sewa dinamis berdasarkan tanggal masuk (boleh dioverride manual)
-    let resolvedRent = Number(rentAmount) || 0;
+    // Harga sewa/bulan dinamis berdasarkan tanggal masuk (boleh dioverride manual)
+    let monthlyRent = Number(rentAmount) || 0;
     let priceInfo = null;
-    if (!resolvedRent) {
+    if (!monthlyRent) {
       priceInfo = await priceForRoom(roomId, moveInDate || new Date());
-      resolvedRent = priceInfo.price;
+      monthlyRent = priceInfo.price;
     }
+
+    const months = Number(durationMonths) > 0 ? Number(durationMonths) : 1;
+    const discount = Number(discountAmount) > 0 ? Number(discountAmount) : 0;
+    const dType = discount > 0 ? (discountType || 'TOTAL') : null;
+
+    // Hitung total kontrak setelah diskon
+    //  - TOTAL     : potong sekali dari keseluruhan  → (sewa*bulan) - diskon
+    //  - PER_MONTH : potong tiap bulan               → (sewa - diskon) * bulan
+    const grossTotal = monthlyRent * months;
+    const contractTotal = dType === 'PER_MONTH'
+      ? Math.max(0, (monthlyRent - discount) * months)
+      : Math.max(0, grossTotal - discount);
 
     const dp = depositAmount ? Number(depositAmount) : null;
 
-    // Kalau ada DP, penghuni mulai sebagai PENDING (harus lunasi dulu sebelum masuk)
-    // & kamar jadi RESERVED. Tanpa DP, perilaku lama: langsung ACTIVE + OCCUPIED.
+    // Ada DP → penghuni mulai PENDING (harus lunasi sisa sebelum masuk), kamar RESERVED.
+    // Tanpa DP → perilaku lama: langsung ACTIVE + OCCUPIED.
     const tenantStatus = status || (dp ? 'PENDING' : 'ACTIVE');
     const roomStatus = tenantStatus === 'PENDING' ? 'RESERVED' : 'OCCUPIED';
 
@@ -99,6 +114,9 @@ router.post('/', authMiddleware, async (req, res) => {
         moveInDate: new Date(moveInDate),
         ...(moveOutDate ? { moveOutDate: new Date(moveOutDate) } : {}),
         ...(dp ? { depositAmount: dp } : {}),
+        durationMonths: months,
+        discountAmount: discount,
+        discountType: dType,
         status: tenantStatus,
         roomId,
       },
@@ -112,40 +130,44 @@ router.post('/', authMiddleware, async (req, res) => {
       const dueDate = new Date(moveIn);
       dueDate.setDate(dueDate.getDate() + 3); // jatuh tempo 3 hari setelah tanggal masuk
 
-      // 1) Tagihan DP (kalau ada) — harus dibayar sebelum masuk
-      if (dp) {
-        const dpBill = await prisma.bill.create({
-          data: {
-            type: 'DEPOSIT',
-            amount: dp,
-            dueDate,
-            status: 'UNPAID',
-            description: `DP / uang muka - Kamar ${tenant.room.number}`,
-            tenantId: tenant.id,
-            roomId,
-          },
-        });
-        createdBills.push(dpBill);
-      }
+      // Satu tagihan SEWA untuk seluruh kontrak (sudah termasuk diskon).
+      // DP dianggap pembayaran sebagian (paidAmount). Sisa = contractTotal - dp.
+      const paid = dp ? Math.min(dp, contractTotal) : 0;
+      const billStatus = paid >= contractTotal ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
 
-      // 2) Tagihan sewa bulan pertama
+      const durasiTxt = months > 1 ? `${months} bulan` : 'bulan pertama';
+      const diskonTxt = discount > 0
+        ? ` (diskon Rp ${discount.toLocaleString('id-ID')}${dType === 'PER_MONTH' ? '/bln' : ''})`
+        : '';
+
       const rentBill = await prisma.bill.create({
         data: {
           type: 'RENT',
-          amount: resolvedRent,
+          amount: contractTotal,
+          discount,
+          paidAmount: paid,
           dueDate,
-          status: 'UNPAID',
-          description: `Sewa bulan pertama - Kamar ${tenant.room.number}`,
+          ...(billStatus === 'PAID' ? { paidAt: new Date() } : {}),
+          status: billStatus,
+          description: `Sewa ${durasiTxt} - Kamar ${tenant.room.number}${diskonTxt}`,
           tenantId: tenant.id,
           roomId,
         },
       });
       createdBills.push(rentBill);
+
+      if (dp) {
+        await prisma.tenant.update({
+          where: { id: tenant.id },
+          data: { depositPaidAt: new Date() },
+        }).catch(() => {});
+      }
     }
 
     // ── Kirim WhatsApp pemberitahuan (non-blocking) ────────
     if (tenant.phone) {
       const moveInStr = new Date(moveInDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      const sisa = dp ? Math.max(0, contractTotal - dp) : contractTotal;
       const lines = [
         `🏠 *Booking Diterima — ${tenant.room.property?.name || 'Andhata Boarding House'}*`,
         ``,
@@ -155,22 +177,25 @@ router.post('/', authMiddleware, async (req, res) => {
         `📋 *Rincian:*`,
         `• Kamar: ${tenant.room.number}`,
         `• Tanggal masuk: ${moveInStr}`,
-        `• Sewa bulan pertama: Rp ${resolvedRent.toLocaleString('id-ID')}`,
+        `• Sewa: Rp ${monthlyRent.toLocaleString('id-ID')}/bln${months > 1 ? ` × ${months} bln` : ''}`,
       ];
+      if (discount > 0) lines.push(`• Diskon: Rp ${discount.toLocaleString('id-ID')}${dType === 'PER_MONTH' ? '/bln' : ''}`);
+      lines.push(`• Total: Rp ${contractTotal.toLocaleString('id-ID')}`);
       if (dp) {
-        lines.push(`• DP / uang muka: Rp ${dp.toLocaleString('id-ID')}`);
+        lines.push(`• DP dibayar: Rp ${dp.toLocaleString('id-ID')}`);
+        lines.push(`• *Sisa kurang bayar: Rp ${sisa.toLocaleString('id-ID')}*`);
         lines.push(``);
-        lines.push(`⚠️ *Mohon lunasi DP + sewa terlebih dahulu sebelum tanggal masuk* agar kamar bisa kamu tempati.`);
+        lines.push(`⚠️ *Mohon lunasi sisa kekurangan sebelum tanggal masuk* agar kamar bisa kamu tempati.`);
       } else {
         lines.push(``);
         lines.push(`Mohon lakukan pembayaran sewa sesuai tagihan ya.`);
       }
-      lines.push(`Ketik *"bayar"* untuk mendapatkan link pembayaran, atau bayar langsung (cash/transfer) ke pemilik kos.`);
+      lines.push(`Ketik *"bayar"* untuk link pembayaran, atau bayar langsung (cash/transfer) ke pemilik kos.`);
       lines.push(`Terima kasih! 🙏`);
       sendWhatsApp(tenant.phone, lines.join('\n'));
     }
 
-    res.status(201).json({ ...tenant, bills: createdBills, priceInfo });
+    res.status(201).json({ ...tenant, bills: createdBills, priceInfo, contractTotal });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -179,7 +204,7 @@ router.post('/', authMiddleware, async (req, res) => {
 // PUT /api/tenants/:id
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
-    const { name, phone, email, ktpNumber, occupation, emergency, status, moveInDate, moveOutDate, roomId, depositAmount } = req.body;
+    const { name, phone, email, ktpNumber, occupation, emergency, status, moveInDate, moveOutDate, roomId, depositAmount, durationMonths, discountAmount, discountType } = req.body;
 
     const data = { name, phone, email, ktpNumber, occupation, emergency };
     if (status) data.status = status;
@@ -187,6 +212,9 @@ router.put('/:id', authMiddleware, async (req, res) => {
     // moveOutDate: kirim tanggal untuk set, kirim null/"" untuk kosongkan
     if (moveOutDate !== undefined) data.moveOutDate = moveOutDate ? new Date(moveOutDate) : null;
     if (depositAmount !== undefined) data.depositAmount = depositAmount ? Number(depositAmount) : null;
+    if (durationMonths !== undefined) data.durationMonths = durationMonths ? Number(durationMonths) : null;
+    if (discountAmount !== undefined) data.discountAmount = discountAmount ? Number(discountAmount) : 0;
+    if (discountType !== undefined) data.discountType = discountType || null;
 
     // Handle room change
     if (roomId) {

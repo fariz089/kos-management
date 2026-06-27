@@ -3,7 +3,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Plus, Pencil, Trash2, X, Loader2, Users, Phone, Mail } from 'lucide-react';
 
-const empty = { name: '', phone: '', email: '', ktpNumber: '', roomId: '', moveInDate: '', moveOutDate: '', status: '', depositAmount: '', rentAmount: '' };
+const empty = {
+  name: '', phone: '', email: '', ktpNumber: '', roomId: '',
+  moveInDate: '', moveOutDate: '', status: '',
+  depositAmount: '', rentAmount: '',
+  durationMonths: '1', discountAmount: '', discountType: 'TOTAL',
+};
+
+const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
 
 export default function Tenants() {
   const qc = useQueryClient();
@@ -28,7 +35,7 @@ export default function Tenants() {
 
   const save = useMutation({
     mutationFn: (d) => modal === 'add' ? api.post('/tenants', d) : api.put(`/tenants/${modal.id}`, d),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); qc.invalidateQueries({ queryKey: ['rooms'] }); setModal(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); qc.invalidateQueries({ queryKey: ['rooms'] }); qc.invalidateQueries({ queryKey: ['bills'] }); setModal(null); },
   });
 
   const del = useMutation({
@@ -42,21 +49,35 @@ export default function Tenants() {
       name: t.name, phone: t.phone, email: t.email || '', ktpNumber: t.ktpNumber || '',
       roomId: t.roomId, moveInDate: t.moveInDate?.slice(0, 10) || '', moveOutDate: t.moveOutDate?.slice(0, 10) || '',
       status: t.status || '', depositAmount: t.depositAmount ?? '', rentAmount: '',
+      durationMonths: t.durationMonths ? String(t.durationMonths) : '1',
+      discountAmount: t.discountAmount ?? '', discountType: t.discountType || 'TOTAL',
     });
     setModal(t);
   };
+
+  // ── Hitung ringkasan pembayaran (live) ─────────────────────
+  const monthly = Number(form.rentAmount) || Number(pricePreview?.price) || 0;
+  const months = Math.max(1, Number(form.durationMonths) || 1);
+  const discount = Number(form.discountAmount) || 0;
+  const dp = Number(form.depositAmount) || 0;
+  const gross = monthly * months;
+  const total = form.discountType === 'PER_MONTH'
+    ? Math.max(0, (monthly - discount) * months)
+    : Math.max(0, gross - discount);
+  const sisa = Math.max(0, total - dp);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const body = { ...form };
     if (body.moveInDate) body.moveInDate = new Date(body.moveInDate).toISOString();
     if (body.moveOutDate) body.moveOutDate = new Date(body.moveOutDate).toISOString();
-    else body.moveOutDate = null; // kirim null agar bisa dikosongkan (bukan dihapus dari body)
+    else body.moveOutDate = null;
     if (!body.email) delete body.email;
     if (!body.ktpNumber) delete body.ktpNumber;
-    // DP: kirim angka kalau diisi, null kalau dikosongkan
     body.depositAmount = body.depositAmount === '' ? null : Number(body.depositAmount);
-    // rentAmount override: hanya kirim kalau diisi (kosong = pakai harga dinamis otomatis)
+    body.durationMonths = Number(body.durationMonths) || 1;
+    body.discountAmount = body.discountAmount === '' ? 0 : Number(body.discountAmount);
+    if (!body.discountAmount) body.discountType = null;
     if (body.rentAmount === '' || body.rentAmount == null) delete body.rentAmount;
     else body.rentAmount = Number(body.rentAmount);
     save.mutate(body);
@@ -169,7 +190,7 @@ export default function Tenants() {
                     <option value={form.roomId}>Kamar {rooms.find(r => r.id === form.roomId)?.number || form.roomId} (current)</option>
                   )}
                   {availableRooms.map(r => (
-                    <option key={r.id} value={r.id}>Kamar {r.number} — {r.tier?.name || r.type} (Rp {Number(r.displayPrice ?? r.price).toLocaleString('id-ID')})</option>
+                    <option key={r.id} value={r.id}>Kamar {r.number} — {r.tier?.name || r.type} ({rupiah(r.displayPrice ?? r.price)})</option>
                   ))}
                 </select>
               </div>
@@ -191,7 +212,7 @@ export default function Tenants() {
                 <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-3 text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-slate-600">Harga sewa otomatis{pricePreview.tierCode ? ` (Tipe ${pricePreview.tierCode})` : ''}</span>
-                    <span className="font-semibold text-emerald-700">Rp {Number(pricePreview.price).toLocaleString('id-ID')}/bln</span>
+                    <span className="font-semibold text-emerald-700">{rupiah(pricePreview.price)}/bln</span>
                   </div>
                   {pricePreview.label && <p className="text-xs text-emerald-600 mt-0.5">{pricePreview.label}</p>}
                 </div>
@@ -199,22 +220,82 @@ export default function Tenants() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Sewa (override)</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Lama Sewa (bulan)</label>
+                  <input type="number" min="1" value={form.durationMonths} onChange={e => setForm({ ...form, durationMonths: e.target.value })}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Sewa/bln (override)</label>
                   <input type="number" value={form.rentAmount} onChange={e => setForm({ ...form, rentAmount: e.target.value })}
                     placeholder={pricePreview ? Number(pricePreview.price).toLocaleString('id-ID') : 'Otomatis'}
                     className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
-                  <p className="text-xs text-slate-400 mt-1">Kosongkan = pakai harga otomatis</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">DP / Uang Muka</label>
-                  <input type="number" value={form.depositAmount} onChange={e => setForm({ ...form, depositAmount: e.target.value })}
-                    placeholder="cth: 500000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
-                  <p className="text-xs text-slate-400 mt-1">Isi jika ada DP</p>
                 </div>
               </div>
-              {modal === 'add' && form.depositAmount && (
+
+              {/* Diskon */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Diskon (opsional)</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="number" value={form.discountAmount} onChange={e => setForm({ ...form, discountAmount: e.target.value })}
+                    placeholder="cth: 100000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
+                  <select value={form.discountType} onChange={e => setForm({ ...form, discountType: e.target.value })}
+                    disabled={!form.discountAmount}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                    <option value="TOTAL">Potong total</option>
+                    <option value="PER_MONTH">Potong /bulan</option>
+                  </select>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  {form.discountType === 'PER_MONTH'
+                    ? 'Potongan dikali jumlah bulan'
+                    : 'Potongan sekali dari keseluruhan'}
+                </p>
+              </div>
+
+              {/* DP */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">DP / Uang Muka (bebas nominal)</label>
+                <input type="number" value={form.depositAmount} onChange={e => setForm({ ...form, depositAmount: e.target.value })}
+                  placeholder="cth: 300000 — boleh berapa saja" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <p className="text-xs text-slate-400 mt-1">Kosongkan jika lunas di muka. Sisa wajib dilunasi sebelum masuk.</p>
+              </div>
+
+              {/* Ringkasan Pembayaran (live) */}
+              {monthly > 0 && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm space-y-1.5">
+                  <p className="font-semibold text-slate-700 mb-2">Ringkasan Pembayaran</p>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Sewa {rupiah(monthly)} × {months} bln</span>
+                    <span>{rupiah(gross)}</span>
+                  </div>
+                  {discount > 0 && (
+                    <div className="flex justify-between text-rose-600">
+                      <span>Diskon{form.discountType === 'PER_MONTH' ? ` (${rupiah(discount)}/bln)` : ''}</span>
+                      <span>− {rupiah(form.discountType === 'PER_MONTH' ? discount * months : discount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-semibold text-slate-800 pt-1.5 border-t border-slate-200">
+                    <span>Total</span>
+                    <span>{rupiah(total)}</span>
+                  </div>
+                  {dp > 0 && (
+                    <>
+                      <div className="flex justify-between text-emerald-600">
+                        <span>DP dibayar</span>
+                        <span>− {rupiah(dp)}</span>
+                      </div>
+                      <div className={`flex justify-between font-bold pt-1.5 border-t border-slate-200 ${sisa > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        <span>{sisa > 0 ? 'Sisa kurang bayar' : 'Lunas'}</span>
+                        <span>{rupiah(sisa)}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {modal === 'add' && dp > 0 && sisa > 0 && (
                 <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                  Penghuni akan berstatus <b>Pending</b> & kamar <b>Reserved</b>. Tagihan DP + sewa bulan pertama dibuat otomatis, dan WhatsApp pemberitahuan dikirim. Penghuni jadi <b>Aktif</b> setelah semua lunas.
+                  Penghuni berstatus <b>Pending</b> & kamar <b>Reserved</b>. Tagihan sewa dibuat otomatis (sudah tercatat DP {rupiah(dp)}, sisa {rupiah(sisa)}), dan WhatsApp dikirim. Penghuni jadi <b>Aktif</b> setelah sisa lunas.
                 </p>
               )}
               {modal !== 'add' && (
