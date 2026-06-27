@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
+const { tenantStage } = require('../utils/lifecycle');
 
 const router = express.Router();
 
@@ -86,7 +87,8 @@ router.get('/occupancy/calendar', authMiddleware, async (req, res) => {
         tier: { select: { code: true, name: true } },
         tenants: {
           where: { status: { in: ['ACTIVE', 'PENDING', 'INACTIVE'] } },
-          select: { id: true, name: true, phone: true, moveInDate: true, moveOutDate: true, status: true },
+          select: { id: true, name: true, phone: true, moveInDate: true, moveOutDate: true, status: true,
+            bills: { select: { amount: true, paidAmount: true, status: true } } },
           orderBy: { moveInDate: 'asc' },
         },
       },
@@ -100,14 +102,20 @@ router.get('/occupancy/calendar', authMiddleware, async (req, res) => {
       type: r.type,
       tier: r.tier ? { code: r.tier.code, name: r.tier.name } : null,
       status: r.status,
-      tenants: r.tenants.map(t => ({
-        id: t.id,
-        name: t.name,
-        phone: t.phone,
-        status: t.status,
-        moveInDate: t.moveInDate,
-        moveOutDate: t.moveOutDate,
-      })),
+      tenants: r.tenants.map(t => {
+        const s = tenantStage(t);
+        return {
+          id: t.id,
+          name: t.name,
+          phone: t.phone,
+          status: t.status,
+          stage: s.stage,
+          stageLabel: s.label,
+          outstanding: s.outstanding,
+          moveInDate: t.moveInDate,
+          moveOutDate: t.moveOutDate,
+        };
+      }),
     }));
 
     res.json({ year, rooms: data });

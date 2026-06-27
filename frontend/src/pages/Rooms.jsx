@@ -16,6 +16,20 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', '
 const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
 const empty = { number: '', floor: 1, type: 'STANDARD', price: '', facilities: '', status: 'AVAILABLE' };
 
+// Badge tahap lifecycle penghuni (selaras backend lifecycle.js)
+const stageBadge = (stage) => ({
+  RESERVED: 'bg-amber-100 text-amber-700',
+  UPCOMING: 'bg-blue-100 text-blue-700',
+  ACTIVE: 'bg-emerald-100 text-emerald-700',
+  FINISHED: 'bg-slate-100 text-slate-500',
+  INACTIVE: 'bg-rose-100 text-rose-600',
+  PENDING: 'bg-amber-100 text-amber-700',
+}[stage] || 'bg-slate-100 text-slate-500');
+const stageLabelOf = (s) => ({
+  RESERVED: 'Dipesan', UPCOMING: 'Akan Masuk', ACTIVE: 'Aktif',
+  FINISHED: 'Selesai', INACTIVE: 'Non-Aktif', PENDING: 'Pending',
+}[s] || s);
+
 // Warna bar penghuni (diputar berdasarkan urutan agar antar penghuni di kamar sama tetap beda)
 const TENANT_BARS = [
   { active: 'bg-blue-500', pending: 'bg-purple-400', text: 'text-white' },
@@ -239,9 +253,10 @@ function OccupancyCalendar({ occ, loading, year, setYear }) {
           <span className="px-4 font-bold text-slate-800 text-lg tabular-nums">{year}</span>
           <button onClick={() => setYear(year + 1)} className="p-2 hover:bg-slate-50 rounded-lg"><ChevronRight size={18} className="text-slate-600" /></button>
         </div>
-        <div className="flex items-center gap-4 text-xs text-slate-500">
-          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500" /> Aktif</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-purple-400" /> Dipesan (DP)</span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500" /> Aktif / Akan Masuk</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-400" /> Dipesan (DP, ada sisa)</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300" /> Selesai</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-100 border border-slate-200" /> Kosong</span>
         </div>
       </div>
@@ -286,12 +301,17 @@ function OccupancyCalendar({ occ, loading, year, setYear }) {
                   {/* bar penghuni */}
                   {spans.map(({ t, idx, sp }) => {
                     const c = TENANT_BARS[idx % TENANT_BARS.length];
-                    const color = t.status === 'PENDING' ? c.pending : (t.status === 'INACTIVE' ? 'bg-slate-300' : c.active);
+                    const st = t.stage || t.status;
+                    // Warna mencerminkan tahap: Selesai/Non-aktif diredupkan,
+                    // Dipesan pakai nuansa "pending", lainnya warna penuh.
+                    const color = (st === 'FINISHED' || st === 'INACTIVE') ? 'bg-slate-300'
+                      : (st === 'RESERVED' || st === 'PENDING') ? c.pending
+                      : c.active;
                     const leftPct = (sp.startMonth / 12) * 100;
                     const widthPct = (sp.span / 12) * 100;
                     return (
                       <button key={t.id} onClick={() => setDetail({ ...t, roomNumber: room.number })}
-                        title={`${t.name} (${t.status})`}
+                        title={`${t.name} — ${t.stageLabel || st}`}
                         className={`absolute top-1.5 bottom-1.5 ${color} ${c.text} rounded-md px-2 text-[11px] font-medium flex items-center truncate shadow-sm hover:brightness-110 transition-all`}
                         style={{
                           left: `calc(${leftPct}% + 2px)`,
@@ -330,10 +350,15 @@ function OccupancyCalendar({ occ, loading, year, setYear }) {
               <div className="flex justify-between"><span className="text-slate-500">Masuk</span><span className="font-medium text-slate-800">{new Date(detail.moveInDate).toLocaleDateString('id-ID')}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Keluar</span><span className="font-medium text-slate-800">{detail.moveOutDate ? new Date(detail.moveOutDate).toLocaleDateString('id-ID') : '—'}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Status</span>
-                <span className={`px-2.5 py-0.5 rounded-lg text-xs font-medium ${detail.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : detail.status === 'PENDING' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {detail.status === 'ACTIVE' ? 'Aktif' : detail.status === 'PENDING' ? 'Pending' : 'Non-Aktif'}
+                <span className={`px-2.5 py-0.5 rounded-lg text-xs font-medium ${stageBadge(detail.stage || detail.status)}`}>
+                  {detail.stageLabel || stageLabelOf(detail.status)}
                 </span>
               </div>
+              {detail.outstanding > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Kurang bayar</span>
+                  <span className="font-semibold text-amber-600">Rp {Number(detail.outstanding).toLocaleString('id-ID')}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

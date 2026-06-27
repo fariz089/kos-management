@@ -12,6 +12,22 @@ const empty = {
 
 const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
 
+// Warna badge per tahap lifecycle (selaras dengan backend lifecycle.js)
+const stageBadge = (stage) => ({
+  RESERVED: 'bg-amber-100 text-amber-700',
+  UPCOMING: 'bg-blue-100 text-blue-700',
+  ACTIVE: 'bg-emerald-100 text-emerald-700',
+  FINISHED: 'bg-slate-100 text-slate-500',
+  INACTIVE: 'bg-rose-100 text-rose-600',
+  // fallback status lama
+  PENDING: 'bg-amber-100 text-amber-700',
+}[stage] || 'bg-slate-100 text-slate-500');
+
+const stageLabelOf = (s) => ({
+  RESERVED: 'Dipesan', UPCOMING: 'Akan Masuk', ACTIVE: 'Aktif',
+  FINISHED: 'Selesai', INACTIVE: 'Non-Aktif', PENDING: 'Pending',
+}[s] || s);
+
 export default function Tenants() {
   const qc = useQueryClient();
   const [modal, setModal] = useState(null);
@@ -31,7 +47,11 @@ export default function Tenants() {
   const { data: tenants = [], isLoading } = useQuery({ queryKey: ['tenants'], queryFn: () => api.get('/tenants') });
   const { data: rooms = [] } = useQuery({ queryKey: ['rooms'], queryFn: () => api.get('/rooms') });
 
-  const availableRooms = rooms.filter(r => r.status === 'AVAILABLE');
+  // Kamar yang bisa dipilih untuk booking baru: yang kosong ATAU sudah dipesan
+  // (RESERVED) — supaya 1 kamar bisa diisi penghuni lain di periode berbeda
+  // (mis. penghuni lama + penghuni baru masuk belakangan). Kamar OCCUPIED
+  // disembunyikan dari daftar tambah, tapi tetap bisa dipilih saat edit.
+  const availableRooms = rooms.filter(r => r.status === 'AVAILABLE' || r.status === 'RESERVED');
 
   const save = useMutation({
     mutationFn: (d) => modal === 'add' ? api.post('/tenants', d) : api.put(`/tenants/${modal.id}`, d),
@@ -132,9 +152,14 @@ export default function Tenants() {
                     <td className="px-6 py-4 text-sm text-slate-600">{t.moveInDate ? new Date(t.moveInDate).toLocaleDateString('id-ID') : '-'}</td>
                     <td className="px-6 py-4 text-sm text-slate-600">{t.moveOutDate ? new Date(t.moveOutDate).toLocaleDateString('id-ID') : <span className="text-slate-300">—</span>}</td>
                     <td className="px-6 py-4">
-                      <span className={`px-3 py-1 rounded-lg text-xs font-medium ${t.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : t.status === 'PENDING' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                        {t.status === 'ACTIVE' ? 'Aktif' : t.status === 'PENDING' ? 'Pending' : 'Non-Aktif'}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className={`inline-flex w-fit px-3 py-1 rounded-lg text-xs font-medium ${stageBadge(t.stage || t.status)}`}>
+                          {t.stageLabel || stageLabelOf(t.status)}
+                        </span>
+                        {t.outstanding > 0 && (
+                          <span className="text-xs text-amber-600">kurang {rupiah(t.outstanding)}</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="inline-flex gap-1">
@@ -300,13 +325,17 @@ export default function Tenants() {
               )}
               {modal !== 'add' && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Status (override manual)</label>
                   <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}
                     className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none">
-                    <option value="ACTIVE">Aktif</option>
-                    <option value="PENDING">Pending</option>
-                    <option value="INACTIVE">Non-Aktif</option>
+                    <option value="">Otomatis (dari tanggal & pembayaran)</option>
+                    <option value="ACTIVE">Paksa Aktif</option>
+                    <option value="PENDING">Paksa Dipesan/Pending</option>
+                    <option value="INACTIVE">Non-Aktif (keluar/batal)</option>
                   </select>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Biarkan "Otomatis" agar status berpindah sendiri: Dipesan → Akan Masuk → Aktif → Selesai sesuai tanggal & pelunasan. Pilih paksa hanya bila perlu.
+                  </p>
                 </div>
               )}
               <button type="submit" disabled={save.isPending}

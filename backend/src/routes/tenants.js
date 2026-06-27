@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
+const { tenantStage } = require('../utils/lifecycle');
 
 const router = express.Router();
 
@@ -38,10 +39,25 @@ router.get('/', authMiddleware, async (req, res) => {
       where,
       include: {
         room: { select: { number: true, property: { select: { name: true } } } },
+        bills: { select: { amount: true, paidAmount: true, status: true } },
       },
       orderBy: { name: 'asc' },
     });
-    res.json(tenants);
+
+    // Tambahkan tahap lifecycle terhitung (Dipesan/Akan Masuk/Aktif/Selesai)
+    const withStage = tenants.map((t) => {
+      const s = tenantStage(t);
+      // jangan bocorkan detail bills mentah ke list; cukup ringkasan
+      const { bills, ...rest } = t;
+      return { ...rest, stage: s.stage, stageLabel: s.label, stageColor: s.color, outstanding: s.outstanding };
+    });
+
+    // Filter by stage kalau diminta (mis. ?stage=ACTIVE) — di atas filter status DB
+    const result = req.query.stage
+      ? withStage.filter((t) => t.stage === req.query.stage)
+      : withStage;
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -58,7 +74,8 @@ router.get('/:id', authMiddleware, async (req, res) => {
       },
     });
     if (!tenant) return res.status(404).json({ error: 'Penghuni tidak ditemukan' });
-    res.json(tenant);
+    const s = tenantStage(tenant);
+    res.json({ ...tenant, stage: s.stage, stageLabel: s.label, stageColor: s.color, outstanding: s.outstanding });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -101,10 +118,22 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const dp = depositAmount ? Number(depositAmount) : null;
 
-    // Ada DP → penghuni mulai PENDING (harus lunasi sisa sebelum masuk), kamar RESERVED.
-    // Tanpa DP → perilaku lama: langsung ACTIVE + OCCUPIED.
-    const tenantStatus = status || (dp ? 'PENDING' : 'ACTIVE');
-    const roomStatus = tenantStatus === 'PENDING' ? 'RESERVED' : 'OCCUPIED';
+    // ── Penentuan status TERSIMPAN (sederhana; tahap kaya dihitung helper) ──
+    // Aturan: simpan ACTIVE hanya bila penghuni benar-benar masuk SEKARANG & lunas.
+    // Selain itu simpan PENDING — biar lifecycle helper yang memetakan jadi
+    // Dipesan / Akan Masuk sesuai tanggal & sisa bayar. Ini mencegah penghuni
+    // yang masuk bulan depan tampil "Aktif".
+    const moveInD = new Date(moveInDate);
+    const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
+    const moveInDay = new Date(moveInD); moveInDay.setHours(0, 0, 0, 0);
+    const sisaAwal = dp ? Math.max(0, contractTotal - dp) : 0;
+    const isFutureMoveIn = moveInDay > todayD;
+    const hasOutstanding = sisaAwal > 0;
+
+    // Default: PENDING kalau ada DP / belum lunas / tanggal masuk di masa depan.
+    const tenantStatus = status || ((dp || isFutureMoveIn || hasOutstanding) ? 'PENDING' : 'ACTIVE');
+    // Kamar: RESERVED bila penghuni belum benar-benar menempati sekarang.
+    const roomStatus = (tenantStatus === 'ACTIVE' && !isFutureMoveIn) ? 'OCCUPIED' : 'RESERVED';
 
     await prisma.room.update({ where: { id: roomId }, data: { status: roomStatus } });
 

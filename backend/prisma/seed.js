@@ -110,6 +110,9 @@ async function main() {
     { roomNumber: 'A-10', name: 'Shafa Nabila',        phone: '6281651385500', moveInDate: excelDate(46235), moveOutDate: excelDate(46327) },
     { roomNumber: 'B-09', name: 'Elza Rifdah',         phone: '6281949270546', moveInDate: excelDate(46170), moveOutDate: excelDate(46201) },
     { roomNumber: 'B-10', name: 'Thalia Trivigiani',   phone: '6281249693213', moveInDate: excelDate(46143), moveOutDate: excelDate(46174) },
+    // Penghuni baru masuk belakangan di A-04 (Aurelia keluar 28 Jun, Lana masuk 20 Jul).
+    // Contoh kasus 1 kamar dipakai beberapa orang di periode berbeda. DP 550rb, sewa 1 bln.
+    { roomNumber: 'A-04', name: 'Lana Malika',         phone: '6281113802605', moveInDate: excelDate(46223), moveOutDate: excelDate(46254), depositAmount: 550000, durationMonths: 1 },
   ];
 
   const roomMap = {};
@@ -119,30 +122,70 @@ async function main() {
     const room = roomMap[td.roomNumber];
     if (!room) continue;
 
+    const hasDP = td.depositAmount && td.depositAmount > 0;
+    const months = td.durationMonths || 1;
+    const contractTotal = room.price * months;
+    const dp = hasDP ? Math.min(td.depositAmount, contractTotal) : 0;
+    const sisa = Math.max(0, contractTotal - dp);
+
+    // Status TERSIMPAN dibiarkan sederhana; tahap kaya (Dipesan/Akan Masuk/
+    // Aktif/Selesai) dihitung on-the-fly oleh utils/lifecycle.js dari tanggal +
+    // pembayaran. Untuk penghuni ber-DP yang belum lunas → PENDING; sisanya
+    // tanpa status khusus akan otomatis terpetakan oleh helper saat ditampilkan.
+    // Kita simpan ACTIVE hanya bila tidak ada sisa & sudah/akan masuk normal.
+    const storedStatus = hasDP && sisa > 0 ? 'PENDING' : 'ACTIVE';
+
     const tenant = await prisma.tenant.create({
       data: {
         name: td.name,
         phone: td.phone,
         moveInDate: td.moveInDate,
         moveOutDate: td.moveOutDate,
-        status: 'ACTIVE',
+        status: storedStatus,
+        ...(hasDP ? { depositAmount: dp, depositPaidAt: new Date(), durationMonths: months } : {}),
         roomId: room.id,
       },
     });
 
-    // Create a paid bill for current month
-    await prisma.bill.create({
-      data: {
-        type: 'RENT',
-        amount: room.price,
-        dueDate: new Date(2026, 5, 10), // June 10, 2026
-        status: 'PAID',
-        paidAt: new Date(2026, 5, 1),
-        description: `Sewa kamar ${td.roomNumber} — Juni 2026`,
-        tenantId: tenant.id,
-        roomId: room.id,
-      },
-    });
+    if (hasDP) {
+      // Tagihan kontrak dengan DP sebagai pembayaran sebagian (kurang bayar).
+      const billStatus = sisa > 0 ? 'PARTIAL' : 'PAID';
+      const due = new Date(td.moveInDate); due.setDate(due.getDate() + 3);
+      await prisma.bill.create({
+        data: {
+          type: 'RENT',
+          amount: contractTotal,
+          paidAmount: dp,
+          dueDate: due,
+          status: billStatus,
+          ...(billStatus === 'PAID' ? { paidAt: new Date() } : {}),
+          description: `Sewa kamar ${td.roomNumber} — DP Rp ${dp.toLocaleString('id-ID')}, sisa Rp ${sisa.toLocaleString('id-ID')}`,
+          tenantId: tenant.id,
+          roomId: room.id,
+        },
+      });
+      // Kamar yang dipesan untuk masa depan → RESERVED (bukan OCCUPIED).
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const mi = new Date(td.moveInDate); mi.setHours(0, 0, 0, 0);
+      if (mi > today || sisa > 0) {
+        await prisma.room.update({ where: { id: room.id }, data: { status: 'RESERVED' } }).catch(() => {});
+      }
+    } else {
+      // Tagihan lunas bulan berjalan (perilaku lama).
+      await prisma.bill.create({
+        data: {
+          type: 'RENT',
+          amount: room.price,
+          paidAmount: room.price,
+          dueDate: new Date(2026, 5, 10), // June 10, 2026
+          status: 'PAID',
+          paidAt: new Date(2026, 5, 1),
+          description: `Sewa kamar ${td.roomNumber} — Juni 2026`,
+          tenantId: tenant.id,
+          roomId: room.id,
+        },
+      });
+    }
   }
 
   console.log('✅ Seeding complete!');
