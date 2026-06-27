@@ -107,7 +107,10 @@ model Tenant {
   emergency   String?      // Kontak darurat
   moveInDate  DateTime
   moveOutDate DateTime?
-  depositAmount Int?       // DP / uang muka (Rupiah) — diisi manual saat booking
+  durationMonths Int?      // Lama sewa (bulan) sesuai kontrak. null = bulanan
+  discountAmount Int?      @default(0) // Total diskon yang diberikan (Rupiah)
+  discountType   String?   // "TOTAL" (potong sekali dari keseluruhan) atau "PER_MONTH" (potong tiap bulan)
+  depositAmount Int?       // DP / uang muka (Rupiah) — bebas nominal, diisi manual saat booking
   depositPaidAt DateTime?  // Kapan DP lunas
   status      TenantStatus @default(ACTIVE)
   roomId      String
@@ -131,9 +134,11 @@ enum TenantStatus {
 model Bill {
   id          String      @id @default(cuid())
   type        BillType    @default(RENT)
-  amount      Int         // Jumlah tagihan (Rupiah)
+  amount      Int         // Jumlah yang HARUS dibayar, SETELAH diskon (Rupiah)
+  discount    Int         @default(0) // Potongan / diskon (Rupiah). amount = hargaAsli - discount
+  paidAmount  Int         @default(0) // Total sudah dibayar (DP / cicilan). Lunas bila paidAmount >= amount
   dueDate     DateTime
-  paidAt      DateTime?
+  paidAt      DateTime?   // Diisi saat LUNAS (paidAmount >= amount)
   paymentMethod String?   // Cara bayar manual: CASH / TRANSFER (null = via Midtrans/gateway)
   status      BillStatus  @default(UNPAID)
   description String?
@@ -159,6 +164,7 @@ enum BillType {
 enum BillStatus {
   UNPAID
   PENDING    // Menunggu konfirmasi pembayaran
+  PARTIAL    // Dibayar sebagian (DP / cicilan) — sisa = amount - paidAmount
   PAID
   OVERDUE
   CANCELLED
