@@ -189,7 +189,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <StageStrip stages={d.tenantStages} />
         <ListPanel
-          title="Akan Masuk (30 hari)" icon={LogIn} accent="blue"
+          title="Akan Masuk" icon={LogIn} accent="blue"
           items={d.upcomingMoveIns} empty="Belum ada yang akan masuk 📭"
           render={(t) => (
             <div key={t.id} className="flex items-center justify-between p-3 bg-blue-50/60 rounded-xl">
@@ -248,7 +248,7 @@ export default function Dashboard() {
       {/* Baris 4 — akan keluar + proyeksi */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ListPanel
-          title="Akan Keluar (30 hari)" icon={LogOut} accent="teal"
+          title="Akan Keluar" icon={LogOut} accent="teal"
           items={d.upcomingMoveOuts} empty="Belum ada yang akan keluar"
           render={(t) => (
             <div key={t.id} className="flex items-center justify-between p-3 bg-teal-50/60 rounded-xl">

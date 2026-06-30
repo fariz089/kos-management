@@ -90,3 +90,31 @@ daftar penghuni, dan semua tagihan — dengan nomor halaman. Dibuat server-side
    langsung di DB.)
 
 Tidak ada perubahan skema database (tidak perlu `prisma migrate`).
+
+---
+
+## 8. Audit menyeluruh — anomali konsistensi angka
+
+Sesuai permintaan, seluruh project disisir. Ditemukan & diperbaiki:
+
+**a. "Akan Masuk" panel kiri (5) ≠ panel kanan (4)**
+Panel kiri = jumlah penghuni stage UPCOMING (tanpa batas waktu). Panel kanan
+dulu dibatasi "30 hari" sehingga penghuni yang masuk >30 hari (mis. masuk 1
+Agustus) tidak ikut terhitung → angka beda. Sekarang panel kanan menampilkan
+SEMUA yang akan masuk, label "(30 hari)" dihapus, jadi kedua angka selalu sama.
+(Diverifikasi: RESERVED 6 · UPCOMING 5 · ACTIVE 4 · FINISHED 4 — cocok.)
+
+**b. "Kamar 17/20 terisi" padahal hanya 4 penghuni Aktif**
+Akar masalah: status kamar (OCCUPIED/RESERVED/AVAILABLE) DISIMPAN di DB dan
+melenceng dari kenyataan — banyak kamar tetap "terisi" walau penghuninya sudah
+selesai/keluar atau belum masuk. Sekarang status kamar DIHITUNG ULANG dari
+lifecycle penghuni setiap kali Dashboard/Kamar dibuka (`reconcileRoomStatus`):
+OCCUPIED bila ada penghuni Aktif, RESERVED bila ada yang Akan Masuk/Dipesan,
+selain itu AVAILABLE. Hasil: 4 terisi (cocok dengan Aktif 4), bukan 17.
+
+**c. Dropdown "Tambah Tagihan" memakai status tersimpan**
+Dulu memfilter `t.status` (tersimpan) yang bisa melenceng. Sekarang memakai
+`stage` terhitung (Aktif/Akan Masuk/Dipesan) — konsisten dengan tampilan lain.
+
+Prinsipnya sama untuk semua: **angka diturunkan dari satu sumber kebenaran
+(lifecycle terhitung), bukan dari field tersimpan yang bisa basi.**

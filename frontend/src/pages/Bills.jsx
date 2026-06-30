@@ -301,8 +301,10 @@ export default function Bills() {
                 <select value={form.tenantId} onChange={e => setForm({ ...form, tenantId: e.target.value })}
                   className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" required>
                   <option value="">Pilih penghuni...</option>
-                  {tenants.filter(t => t.status === 'ACTIVE' || t.status === 'PENDING').map(t => (
-                    <option key={t.id} value={t.id}>{t.name} — Kamar {t.room?.number || '?'}</option>
+                  {tenants
+                    .filter(t => ['ACTIVE', 'UPCOMING', 'RESERVED'].includes(t.stage || ''))
+                    .map(t => (
+                    <option key={t.id} value={t.id}>{t.name} — Kamar {t.room?.number || '?'} ({t.stageLabel || t.stage})</option>
                   ))}
                 </select>
               </div>

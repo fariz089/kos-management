@@ -3,12 +3,16 @@ const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
 const { tenantStage } = require('../utils/lifecycle');
+const { reconcileRoomStatus } = require('../utils/reconcile');
 
 const router = express.Router();
 
 // GET /api/rooms — List all rooms (with filters)
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    // Selaraskan status kamar dari lifecycle penghuni (idempoten) sebelum menampilkan.
+    await reconcileRoomStatus(req.user.id).catch((e) => console.error('reconcile rooms skip:', e.message));
+
     const { status, propertyId, type } = req.query;
     const where = {};
     if (status) where.status = status;

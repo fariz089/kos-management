@@ -1,4 +1,5 @@
 const prisma = require('./prisma');
+const { tenantStage } = require('./lifecycle');
 
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 
@@ -97,4 +98,47 @@ async function reconcileBilling(ownerId) {
   return { removedPhantom, removedDuplicate, fixedDp, fixedDueDate };
 }
 
-module.exports = { reconcileBilling };
+/**
+ * Selaraskan status KAMAR dari tahap lifecycle penghuninya (computed), bukan dari
+ * field tersimpan yang sering melenceng. Aturan per kamar:
+ *   - OCCUPIED  : ada penghuni yang stage-nya ACTIVE (sedang tinggal hari ini).
+ *   - RESERVED  : tidak ada yang ACTIVE, tapi ada UPCOMING/RESERVED (akan masuk).
+ *   - AVAILABLE : tidak ada penghuni aktif/akan masuk.
+ *   - MAINTENANCE: dihormati apa adanya (tidak diutak-atik otomatis).
+ *
+ * @param {string} ownerId
+ * @returns {Promise<{fixedRooms:number}>}
+ */
+async function reconcileRoomStatus(ownerId, now = new Date()) {
+  const rooms = await prisma.room.findMany({
+    where: { property: { ownerId } },
+    include: {
+      tenants: {
+        select: { moveInDate: true, moveOutDate: true, status: true,
+          bills: { select: { amount: true, paidAmount: true, status: true } } },
+      },
+    },
+  });
+
+  let fixedRooms = 0;
+  for (const r of rooms) {
+    if (r.status === 'MAINTENANCE') continue; // jangan ganggu kamar perbaikan
+
+    let hasActive = false;
+    let hasUpcoming = false;
+    for (const t of r.tenants) {
+      const stage = tenantStage(t, now).stage;
+      if (stage === 'ACTIVE') hasActive = true;
+      else if (stage === 'UPCOMING' || stage === 'RESERVED') hasUpcoming = true;
+    }
+
+    const correct = hasActive ? 'OCCUPIED' : hasUpcoming ? 'RESERVED' : 'AVAILABLE';
+    if (r.status !== correct) {
+      await prisma.room.update({ where: { id: r.id }, data: { status: correct } });
+      fixedRooms += 1;
+    }
+  }
+  return { fixedRooms };
+}
+
+module.exports = { reconcileBilling, reconcileRoomStatus };

@@ -82,3 +82,9 @@ WHERE b."tenantId" = t."id"
   AND b."dueDate" < date_trunc('day', t."moveInDate");
 
 COMMIT;
+
+-- ── Catatan: status KAMAR (terisi/dipesan/kosong) ─────────────
+-- Tidak dikoreksi lewat SQL karena bergantung pada lifecycle penghuni yang
+-- dihitung di aplikasi (ACTIVE/UPCOMING/RESERVED/FINISHED). Status kamar
+-- otomatis diselaraskan oleh backend setiap kali halaman Dashboard atau Kamar
+-- dibuka (fungsi reconcileRoomStatus). Jadi cukup buka dashboard sekali.

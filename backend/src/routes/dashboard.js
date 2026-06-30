@@ -2,7 +2,7 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { tenantStage } = require('../utils/lifecycle');
-const { reconcileBilling } = require('../utils/reconcile');
+const { reconcileBilling, reconcileRoomStatus } = require('../utils/reconcile');
 
 const router = express.Router();
 
@@ -15,11 +15,11 @@ router.get('/', authMiddleware, async (req, res) => {
     const ownerId = req.user.id;
     // Auto-rapikan data sebelum hitung ringkasan (idempoten & ringan).
     await reconcileBilling(ownerId).catch((e) => console.error('reconcile (dashboard) skip:', e.message));
+    await reconcileRoomStatus(ownerId).catch((e) => console.error('reconcile rooms (dashboard) skip:', e.message));
     const now = new Date();
     const today = startOfDay(now);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-    const in30 = new Date(today); in30.setDate(in30.getDate() + 30);
     const monthLabel = now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
 
     // Ambil semua data yang dibutuhkan dalam beberapa query paralel.
@@ -62,10 +62,12 @@ router.get('/', authMiddleware, async (req, res) => {
       const s = tenantStage(t, now);
       stageCount[s.stage] = (stageCount[s.stage] || 0) + 1;
 
-      // Akan masuk dalam 30 hari ke depan
+      // Daftar "Akan Masuk": tampilkan SEMUA penghuni yang tanggal masuknya masih
+      // di depan & bukan INACTIVE — supaya konsisten dengan jumlah di Status Penghuni.
+      // (Sebelumnya dibatasi 30 hari sehingga angka panel kanan ≠ panel kiri.)
       if (t.moveInDate) {
         const mi = startOfDay(t.moveInDate);
-        if (mi >= today && mi <= in30 && s.stage !== 'INACTIVE') {
+        if (mi >= today && s.stage !== 'INACTIVE') {
           upcomingMoveIns.push({
             id: t.id, name: t.name, phone: t.phone,
             room: t.room?.number || '-', date: t.moveInDate,
@@ -73,10 +75,11 @@ router.get('/', authMiddleware, async (req, res) => {
           });
         }
       }
-      // Akan keluar dalam 30 hari ke depan
+      // Daftar "Akan Keluar": semua yang tanggal keluarnya masih di depan & sedang
+      // tinggal / akan tinggal (bukan yang sudah selesai/batal).
       if (t.moveOutDate) {
         const mo = startOfDay(t.moveOutDate);
-        if (mo >= today && mo <= in30) {
+        if (mo >= today && ['ACTIVE', 'UPCOMING', 'RESERVED'].includes(s.stage)) {
           upcomingMoveOuts.push({
             id: t.id, name: t.name, phone: t.phone,
             room: t.room?.number || '-', date: t.moveOutDate,
@@ -195,8 +198,8 @@ router.get('/', authMiddleware, async (req, res) => {
       // Daftar untuk panel
       overdueBills: overdueBills.slice(0, 10),
       partialBills: partialBills.slice(0, 10),     // "yang DP mana" → di sini
-      upcomingMoveIns: upcomingMoveIns.slice(0, 10),
-      upcomingMoveOuts: upcomingMoveOuts.slice(0, 10),
+      upcomingMoveIns,
+      upcomingMoveOuts,
 
       // Kompatibilitas mundur (key lama)
       unpaidBills: unpaidCount,
