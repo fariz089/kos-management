@@ -39,7 +39,7 @@ async function generateReport(ownerId, res) {
     prisma.room.findMany({ where: { property: { ownerId } }, orderBy: { number: 'asc' } }),
     prisma.tenant.findMany({
       where: { room: { property: { ownerId } } },
-      include: { room: { select: { number: true } }, bills: { select: { amount: true, paidAmount: true, status: true } } },
+      include: { room: { select: { id: true, number: true } }, bills: { select: { amount: true, paidAmount: true, status: true } } },
       orderBy: { name: 'asc' },
     }),
     prisma.bill.findMany({
@@ -69,9 +69,27 @@ async function generateReport(ownerId, res) {
     }
   }
 
-  const occupied = rooms.filter(r => r.status === 'OCCUPIED').length;
-  const available = rooms.filter(r => r.status === 'AVAILABLE').length;
-  const reserved = rooms.filter(r => r.status === 'RESERVED').length;
+  // ── Status kamar DIHITUNG dari lifecycle penghuni (bukan field tersimpan) ──
+  // Supaya konsisten dengan Dashboard: kamar Terisi bila ada penghuni Aktif,
+  // Dipesan bila ada yang Akan Masuk/Dipesan (belum masuk), selain itu Kosong.
+  const roomStage = new Map(); // roomId -> { hasActive, hasUpcoming }
+  for (const t of tenants) {
+    const rid = t.room?.id;
+    if (!rid) continue;
+    const st = tenantStage(t, now).stage;
+    const cur = roomStage.get(rid) || { hasActive: false, hasUpcoming: false };
+    if (st === 'ACTIVE') cur.hasActive = true;
+    else if (st === 'UPCOMING' || st === 'RESERVED') cur.hasUpcoming = true;
+    roomStage.set(rid, cur);
+  }
+  let occupied = 0, reserved = 0, available = 0, maintenance = 0;
+  for (const r of rooms) {
+    if (r.status === 'MAINTENANCE') { maintenance++; continue; }
+    const s = roomStage.get(r.id) || {};
+    if (s.hasActive) occupied++;
+    else if (s.hasUpcoming) reserved++;
+    else available++;
+  }
 
   // ── Mulai dokumen ───────────────────────────────────────────
   const doc = new PDFDocument({ size: 'A4', margin: 40, bufferPages: true });
@@ -127,8 +145,11 @@ async function generateReport(ownerId, res) {
   const x2 = ML + half + 8;
   doc.roundedRect(x2, line2Y, half, 60, 6).fill('#f8fafc');
   doc.fillColor(C.slate).font('Helvetica-Bold').fontSize(9).text('Kamar', x2 + 10, line2Y + 8);
+  const kamarBooked = reserved; // kamar yang sudah dibooking untuk penghuni yang akan datang
   doc.font('Helvetica').fontSize(8.5).fillColor(C.sub).text(
-    `Terisi ${occupied}  ·  Dipesan ${reserved}  ·  Kosong ${available}\nTotal ${rooms.length} kamar`,
+    `Terisi ${occupied}  ·  Dibooking ${kamarBooked}  ·  Kosong ${available}` +
+    (maintenance ? `  ·  Perbaikan ${maintenance}` : '') +
+    `\nTotal ${rooms.length} kamar (Dibooking = sudah ada calon penghuni)`,
     x2 + 10, line2Y + 24, { width: half - 20, lineGap: 3 });
   doc.y = line2Y + 70;
 

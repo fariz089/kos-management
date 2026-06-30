@@ -170,7 +170,7 @@ export default function Dashboard() {
           value={`${d.occupiedRooms || 0}/${d.totalRooms || 0} terisi`}
           breakdown={[
             { label: 'Kosong', value: `${d.availableRooms || 0} kamar` },
-            { label: 'Dipesan', value: `${d.reservedRooms || 0} kamar` },
+            { label: 'Dibooking', value: `${d.reservedRooms || 0} kamar` },
             ...(d.maintenanceRooms ? [{ label: 'Perbaikan', value: `${d.maintenanceRooms} kamar` }] : []),
           ]}
         />

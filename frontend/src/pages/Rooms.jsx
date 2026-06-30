@@ -5,7 +5,7 @@ import { Plus, Pencil, Trash2, X, Loader2, DoorOpen, LayoutGrid, CalendarRange, 
 
 const ROOM_TYPES = ['STANDARD', 'DELUXE', 'SUITE'];
 const STATUSES = ['AVAILABLE', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'];
-const STATUS_LABELS = { AVAILABLE: 'Kosong', OCCUPIED: 'Terisi', RESERVED: 'Dipesan', MAINTENANCE: 'Perbaikan' };
+const STATUS_LABELS = { AVAILABLE: 'Kosong', OCCUPIED: 'Terisi', RESERVED: 'Dibooking', MAINTENANCE: 'Perbaikan' };
 const STATUS_COLORS = {
   AVAILABLE: 'bg-emerald-100 text-emerald-700',
   OCCUPIED: 'bg-blue-100 text-blue-700',

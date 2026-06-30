@@ -118,3 +118,16 @@ Dulu memfilter `t.status` (tersimpan) yang bisa melenceng. Sekarang memakai
 
 Prinsipnya sama untuk semua: **angka diturunkan dari satu sumber kebenaran
 (lifecycle terhitung), bukan dari field tersimpan yang bisa basi.**
+
+## 9. Laporan PDF: status kamar basi + istilah "Dipesan" ambigu
+
+**Masalah:** Laporan menampilkan "Terisi 17 · Dipesan 1" — angka kamar tersimpan
+yang melenceng, dan kata "Dipesan" dipakai untuk DUA hal berbeda: status
+penghuni (RESERVED = sudah DP belum lunas) DAN status kamar (dibooking).
+
+**Perbaikan:**
+- Laporan kini menghitung status kamar dari lifecycle penghuni (sama seperti
+  Dashboard) → Terisi = jumlah penghuni Aktif, dst. Konsisten.
+- Istilah kamar diubah dari "Dipesan" menjadi **"Dibooking"** di laporan,
+  Dashboard, dan halaman Kamar — supaya tidak rancu dengan status penghuni
+  "Dipesan". Sekarang "Dipesan" HANYA untuk penghuni; "Dibooking" untuk kamar.

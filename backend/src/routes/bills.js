@@ -2,7 +2,7 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
-const { reconcileBilling } = require('../utils/reconcile');
+const { reconcileBilling, reconcileRoomStatus } = require('../utils/reconcile');
 const { generateReport } = require('../utils/report');
 
 const router = express.Router();
@@ -71,6 +71,7 @@ router.get('/report.pdf', authMiddleware, async (req, res) => {
   try {
     // Rapikan dulu supaya laporan akurat.
     await reconcileBilling(req.user.id).catch(() => {});
+    await reconcileRoomStatus(req.user.id).catch(() => {});
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="Laporan-Kos.pdf"`);
     await generateReport(req.user.id, res);
