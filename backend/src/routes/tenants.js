@@ -343,12 +343,16 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
       discountAmount = 0,
       discountType = 'TOTAL',
       depositAmount,
+      startDate: startDateInput,   // tanggal mulai perpanjangan (opsional)
     } = req.body;
 
     const months = Math.max(1, Number(durationMonths) || 1);
 
-    // Harga sewa: pakai override, atau harga dinamis berdasarkan tanggal perpanjangan
-    const startDate = tenant.moveOutDate || new Date();
+    // Harga sewa: pakai override, atau harga dinamis berdasarkan tanggal perpanjangan.
+    // Tanggal mulai: pakai input manual, kalau kosong pakai tanggal keluar saat ini.
+    const startDate = startDateInput
+      ? new Date(startDateInput)
+      : (tenant.moveOutDate || new Date());
     let monthlyRent = Number(rentAmount) || 0;
     let priceInfo = null;
     if (!monthlyRent) {
@@ -372,13 +376,18 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
     const newMoveOut = new Date(startDate);
     newMoveOut.setMonth(newMoveOut.getMonth() + months);
 
+    // durationMonths AKUMULATIF: kontrak total = bulan lama + bulan perpanjangan.
+    // Ini menjaga konsistensi jumlah tagihan sewa (1 tagihan per periode kontrak)
+    // sehingga validasi "Tambah Tagihan" & rekonsiliasi tidak salah hitung.
+    const newDuration = (tenant.durationMonths || 1) + months;
+
     // Update tenant
     const newStatus = sisa > 0 ? 'PENDING' : 'ACTIVE';
     await prisma.tenant.update({
       where: { id: tenant.id },
       data: {
         moveOutDate: newMoveOut,
-        durationMonths: months,
+        durationMonths: newDuration,
         discountAmount: discount,
         discountType: dType,
         depositAmount: dp || null,

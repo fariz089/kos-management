@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw, Banknote, Wallet } from 'lucide-react';
+import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw, Banknote, Wallet, Sparkles } from 'lucide-react';
 
 const BILL_TYPES = ['RENT', 'ELECTRIC', 'WATER', 'WIFI', 'OTHER'];
 const STATUS_LABELS = {
@@ -46,8 +46,24 @@ export default function Bills() {
     mutationFn: () => api.post('/bills/generate-monthly'),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['bills'] });
-      alert(`Berhasil generate ${data.generated || 0} tagihan bulan ini!`);
+      const skipped = data.skipped?.length ? ` (${data.skipped.length} dilewati: penghuni belum masuk / kontrak penuh)` : '';
+      alert(`Berhasil generate ${data.generated || 0} tagihan bulan ini!${skipped}`);
     },
+  });
+
+  const reconcile = useMutation({
+    mutationFn: () => api.post('/bills/reconcile'),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['bills'] });
+      qc.invalidateQueries({ queryKey: ['tenants'] });
+      alert(
+        `Tagihan dirapikan:\n` +
+        `• ${data.removedPhantom} tagihan hantu dihapus (penghuni belum masuk)\n` +
+        `• ${data.removedDuplicate} tagihan sewa ganda dihapus\n` +
+        `• ${data.fixedDp} DP diselaraskan dengan data penghuni`
+      );
+    },
+    onError: (error) => alert('Gagal merapikan: ' + error.message),
   });
 
   const payBill = useMutation({
@@ -147,6 +163,11 @@ export default function Bills() {
           <p className="text-slate-500 text-sm mt-1">Kelola tagihan penghuni</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => { if (confirm('Rapikan tagihan?\n\nIni akan:\n• Hapus tagihan untuk penghuni yang belum masuk\n• Hapus tagihan sewa ganda di luar kontrak\n• Selaraskan DP dengan data penghuni\n\nTagihan yang sudah ada pembayaran TIDAK akan dihapus.')) reconcile.mutate(); }} disabled={reconcile.isPending}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-all disabled:opacity-50">
+            {reconcile.isPending ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            Rapikan Tagihan
+          </button>
           <button onClick={() => genMonthly.mutate()} disabled={genMonthly.isPending}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-all disabled:opacity-50">
             {genMonthly.isPending ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}

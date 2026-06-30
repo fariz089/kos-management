@@ -68,16 +68,16 @@ export default function Tenants() {
   const [renewForm, setRenewForm] = useState({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
   const [renewPricePreview, setRenewPricePreview] = useState(null);
 
-  // Fetch harga untuk perpanjangan
+  // Fetch harga untuk perpanjangan (mengikuti tanggal mulai yang dipilih)
   useEffect(() => {
     if (!renewModal) { setRenewPricePreview(null); return; }
     let cancelled = false;
-    const startDate = renewModal.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    const startDate = renewForm.startDate || renewModal.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
     api.get(`/pricing/preview?roomId=${renewModal.roomId}&date=${startDate}`)
       .then(res => { if (!cancelled) setRenewPricePreview(res); })
       .catch(() => { if (!cancelled) setRenewPricePreview(null); });
     return () => { cancelled = true; };
-  }, [renewModal]);
+  }, [renewModal, renewForm.startDate]);
 
   const renew = useMutation({
     mutationFn: ({ id, data }) => api.post(`/tenants/${id}/renew`, data),
@@ -92,7 +92,8 @@ export default function Tenants() {
   });
 
   const openRenew = (t) => {
-    setRenewForm({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
+    const defaultStart = t.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    setRenewForm({ startDate: defaultStart, durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
     setRenewModal(t);
   };
 
@@ -105,6 +106,7 @@ export default function Tenants() {
     if (body.rentAmount === '' || body.rentAmount == null) delete body.rentAmount;
     else body.rentAmount = Number(body.rentAmount);
     body.depositAmount = body.depositAmount === '' ? null : Number(body.depositAmount);
+    if (body.startDate) body.startDate = new Date(body.startDate).toISOString();
     renew.mutate({ id: renewModal.id, data: body });
   };
 
@@ -218,9 +220,12 @@ export default function Tenants() {
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <div className="inline-flex gap-1">
-                        {(t.stage === 'FINISHED' || t.stage === 'ACTIVE') && (
-                          <button onClick={() => openRenew(t)} title="Perpanjang kontrak" className="p-2 hover:bg-blue-50 rounded-lg"><RefreshCw size={15} className="text-blue-600" /></button>
+                      <div className="inline-flex gap-1 items-center">
+                        {(t.stage === 'FINISHED' || t.stage === 'ACTIVE' || t.stage === 'UPCOMING') && (
+                          <button onClick={() => openRenew(t)} title="Perpanjang kontrak"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-medium">
+                            <RefreshCw size={13} /> Perpanjang
+                          </button>
                         )}
                         <button onClick={() => openEdit(t)} className="p-2 hover:bg-slate-100 rounded-lg"><Pencil size={15} className="text-slate-500" /></button>
                         <button onClick={() => { if (confirm('Hapus penghuni ini?')) del.mutate(t.id); }} className="p-2 hover:bg-red-50 rounded-lg"><Trash2 size={15} className="text-red-500" /></button>
@@ -431,6 +436,15 @@ export default function Tenants() {
             )}
 
             <form onSubmit={handleRenewSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Tanggal Mulai Perpanjangan</label>
+                <input type="date" value={renewForm.startDate} onChange={e => setRenewForm({ ...renewForm, startDate: e.target.value })}
+                  className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required />
+                <p className="text-xs text-slate-400 mt-1">
+                  Default = tanggal keluar saat ini. Periode baru: {renewForm.startDate ? new Date(renewForm.startDate).toLocaleDateString('id-ID') : '-'}
+                  {renewForm.startDate && (() => { const d = new Date(renewForm.startDate); d.setMonth(d.getMonth() + renewMonths); return ` s/d ${d.toLocaleDateString('id-ID')}`; })()}
+                </p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Lama Perpanjang (bulan)</label>

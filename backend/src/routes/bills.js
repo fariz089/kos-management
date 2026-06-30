@@ -127,55 +127,152 @@ router.post('/generate-monthly', authMiddleware, async (req, res) => {
     const month = req.body.month || now.getMonth() + 1; // 1-indexed
     const year = req.body.year || now.getFullYear();
 
+    // Rentang bulan target
+    const periodStart = new Date(year, month - 1, 1);
+    const periodEnd = new Date(year, month, 0, 23, 59, 59);
+
     const activeTenants = await prisma.tenant.findMany({
       where: {
         status: { in: ['ACTIVE', 'PENDING'] },
         room: { property: { ownerId: req.user.id } },
       },
-      include: { room: true },
+      include: {
+        room: true,
+        bills: { where: { type: 'RENT', status: { not: 'CANCELLED' } } },
+      },
     });
 
     const bills = [];
+    const skipped = [];
     for (const tenant of activeTenants) {
-      // Check if bill already exists for this month
-      const existing = await prisma.bill.findFirst({
-        where: {
-          tenantId: tenant.id,
+      const moveIn = tenant.moveInDate ? new Date(tenant.moveInDate) : null;
+      const moveOut = tenant.moveOutDate ? new Date(tenant.moveOutDate) : null;
+
+      // 1) Hanya generate kalau periode kontrak penghuni MENCAKUP bulan target.
+      //    - moveIn harus <= akhir bulan target (sudah/akan masuk di bulan ini atau sebelumnya)
+      //    - moveOut (kalau ada) harus >= awal bulan target (kontrak belum berakhir)
+      //    Ini mencegah tagihan "hantu" untuk penghuni yang baru masuk bulan depan
+      //    atau yang kontraknya sudah selesai.
+      if (moveIn && moveIn > periodEnd) { skipped.push({ name: tenant.name, reason: 'belum masuk' }); continue; }
+      if (moveOut && moveOut < periodStart) { skipped.push({ name: tenant.name, reason: 'kontrak selesai' }); continue; }
+
+      // 2) JANGAN melebihi jumlah bulan kontrak (durationMonths).
+      //    Tagihan sewa kontrak sudah dibuat saat booking/perpanjang. Generate
+      //    bulanan tidak boleh menambah tagihan di luar kontrak — gunakan fitur
+      //    "Perpanjang" untuk menambah periode baru.
+      const maxBills = tenant.durationMonths || 1;
+      if (tenant.bills.length >= maxBills) { skipped.push({ name: tenant.name, reason: 'kontrak sudah tertagih penuh' }); continue; }
+
+      // 3) Cek apakah sudah ada tagihan RENT yang jatuh tempo di bulan ini.
+      const existing = tenant.bills.find((b) => {
+        const d = new Date(b.dueDate);
+        return d >= periodStart && d <= periodEnd;
+      });
+      if (existing) { skipped.push({ name: tenant.name, reason: 'sudah ada tagihan bulan ini' }); continue; }
+
+      // Harga dinamis berdasarkan tanggal masuk penghuni
+      let rentAmount = tenant.room.price;
+      try {
+        const p = await priceForRoom(tenant.roomId, tenant.moveInDate);
+        rentAmount = p.price;
+      } catch (e) { /* fallback ke room.price */ }
+
+      // Due date = tanggal masuk penghuni di bulan ini (anniversary)
+      const moveInDay = moveIn ? moveIn.getDate() : 1;
+      const dueDate = new Date(year, month - 1, moveInDay);
+
+      const bill = await prisma.bill.create({
+        data: {
           type: 'RENT',
-          dueDate: {
-            gte: new Date(year, month - 1, 1),
-            lte: new Date(year, month, 0, 23, 59, 59),
-          },
+          amount: rentAmount,
+          dueDate,
+          description: `Sewa kamar ${tenant.room.number} — ${month}/${year}`,
+          tenantId: tenant.id,
+          roomId: tenant.roomId,
         },
       });
+      bills.push(bill);
+    }
 
-      if (!existing) {
-        // Harga dinamis berdasarkan tanggal masuk penghuni
-        let rentAmount = tenant.room.price;
-        try {
-          const p = await priceForRoom(tenant.roomId, tenant.moveInDate);
-          rentAmount = p.price;
-        } catch (e) { /* fallback ke room.price */ }
+    res.json({ generated: bills.length, bills, skipped });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-        // Due date = tanggal masuk penghuni di bulan ini (anniversary)
-        const moveInDay = tenant.moveInDate ? new Date(tenant.moveInDate).getDate() : 1;
-        const dueDate = new Date(year, month - 1, moveInDay);
+// POST /api/bills/reconcile — Bersihkan & selaraskan tagihan dengan data penghuni.
+// Memperbaiki 3 hal tanpa perlu SQL manual:
+//   1. Hapus tagihan "hantu" (generate bulanan) untuk penghuni yang belum masuk.
+//   2. Hapus tagihan sewa GANDA di luar jumlah bulan kontrak (durationMonths).
+//   3. Selaraskan paidAmount tagihan DP dengan tenant.depositAmount (beda ≤ 5 rupiah).
+router.post('/reconcile', authMiddleware, async (req, res) => {
+  try {
+    const tenants = await prisma.tenant.findMany({
+      where: { room: { property: { ownerId: req.user.id } } },
+      include: { bills: { orderBy: { createdAt: 'asc' } } },
+    });
 
-        const bill = await prisma.bill.create({
-          data: {
-            type: 'RENT',
-            amount: rentAmount,
-            dueDate,
-            description: `Sewa kamar ${tenant.room.number} — ${month}/${year}`,
-            tenantId: tenant.id,
-            roomId: tenant.roomId,
-          },
-        });
-        bills.push(bill);
+    const removedPhantom = [];
+    const removedDuplicate = [];
+    const fixedDp = [];
+
+    for (const t of tenants) {
+      const rentBills = t.bills.filter((b) => b.type === 'RENT' && b.status !== 'CANCELLED');
+
+      // 1) Tagihan hantu: belum dibayar, pola generate bulanan, & penghuni belum masuk.
+      const phantomPattern = /^Sewa kamar .+ — \d+\/\d{4}$/;
+      for (const b of rentBills) {
+        const isPhantomDesc = phantomPattern.test(b.description || '');
+        const unpaid = (b.paidAmount || 0) === 0 && ['UNPAID', 'OVERDUE'].includes(b.status);
+        const notYetMovedIn = t.moveInDate && new Date(t.moveInDate) > new Date(b.dueDate);
+        if (isPhantomDesc && unpaid && notYetMovedIn) {
+          await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
+          await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
+          removedPhantom.push({ tenant: t.name, billId: b.id });
+        }
+      }
+
+      // 2) Tagihan sewa ganda di luar kontrak. Sisakan yang terlama (kontrak asli).
+      const remainingRent = (await prisma.bill.findMany({
+        where: { tenantId: t.id, type: 'RENT', status: { not: 'CANCELLED' } },
+        orderBy: { createdAt: 'asc' },
+      }));
+      const maxBills = t.durationMonths || 1;
+      if (remainingRent.length > maxBills) {
+        const excess = remainingRent.slice(maxBills);
+        for (const b of excess) {
+          // Hanya hapus duplikat yang BELUM dibayar (lindungi yang sudah ada uang masuk).
+          if ((b.paidAmount || 0) === 0) {
+            await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
+            await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
+            removedDuplicate.push({ tenant: t.name, billId: b.id });
+          }
+        }
+      }
+
+      // 3) Selaraskan DP: paidAmount tagihan PARTIAL ke tenant.depositAmount (beda kecil).
+      if (t.depositAmount != null) {
+        const partial = remainingRent.find((b) => b.status === 'PARTIAL');
+        if (partial) {
+          const diff = Math.abs((partial.paidAmount || 0) - t.depositAmount);
+          if (diff >= 1 && diff <= 5) {
+            await prisma.bill.update({
+              where: { id: partial.id },
+              data: { paidAmount: t.depositAmount },
+            });
+            fixedDp.push({ tenant: t.name, from: partial.paidAmount, to: t.depositAmount });
+          }
+        }
       }
     }
 
-    res.json({ generated: bills.length, bills });
+    res.json({
+      message: 'Rekonsiliasi selesai',
+      removedPhantom: removedPhantom.length,
+      removedDuplicate: removedDuplicate.length,
+      fixedDp: fixedDp.length,
+      detail: { removedPhantom, removedDuplicate, fixedDp },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
