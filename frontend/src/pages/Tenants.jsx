@@ -65,19 +65,49 @@ export default function Tenants() {
 
   // ── Perpanjang (Renew) ─────────────────────────────────────
   const [renewModal, setRenewModal] = useState(null);
-  const [renewForm, setRenewForm] = useState({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
+  const [renewForm, setRenewForm] = useState({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '', roomId: '' });
   const [renewPricePreview, setRenewPricePreview] = useState(null);
+  const [renewAvailRooms, setRenewAvailRooms] = useState([]);   // kamar kosong utk periode baru
+  const [renewCurrentFree, setRenewCurrentFree] = useState(true); // apakah kamar saat ini bebas
+  const [renewChecking, setRenewChecking] = useState(false);
 
-  // Fetch harga untuk perpanjangan (mengikuti tanggal mulai yang dipilih)
+  // Hitung tanggal mulai & selesai periode perpanjangan
+  const renewStart = renewForm.startDate || renewModal?.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+  const renewMonthsNum = Math.max(1, Number(renewForm.durationMonths) || 1);
+  const renewEndISO = (() => {
+    const d = new Date(renewStart); d.setMonth(d.getMonth() + renewMonthsNum);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  // Cek ketersediaan kamar untuk periode perpanjangan (kamar saat ini + daftar kosong)
+  useEffect(() => {
+    if (!renewModal) { setRenewAvailRooms([]); setRenewCurrentFree(true); return; }
+    let cancelled = false;
+    setRenewChecking(true);
+    api.get(`/rooms/available?start=${renewStart}&end=${renewEndISO}&excludeTenantId=${renewModal.id}`)
+      .then(rooms => {
+        if (cancelled) return;
+        setRenewAvailRooms(rooms);
+        const currentFree = rooms.some(r => r.id === renewModal.roomId);
+        setRenewCurrentFree(currentFree);
+        // Default pilihan kamar: tetap di kamar sekarang bila bebas, kalau tidak kosongkan
+        setRenewForm(f => ({ ...f, roomId: currentFree ? renewModal.roomId : (f.roomId && rooms.some(r => r.id === f.roomId) ? f.roomId : '') }));
+      })
+      .catch(() => { if (!cancelled) { setRenewAvailRooms([]); setRenewCurrentFree(true); } })
+      .finally(() => { if (!cancelled) setRenewChecking(false); });
+    return () => { cancelled = true; };
+  }, [renewModal, renewStart, renewEndISO]);
+
+  // Fetch harga untuk perpanjangan (mengikuti kamar terpilih + tanggal mulai)
   useEffect(() => {
     if (!renewModal) { setRenewPricePreview(null); return; }
     let cancelled = false;
-    const startDate = renewForm.startDate || renewModal.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-    api.get(`/pricing/preview?roomId=${renewModal.roomId}&date=${startDate}`)
+    const roomForPrice = renewForm.roomId || renewModal.roomId;
+    api.get(`/pricing/preview?roomId=${roomForPrice}&date=${renewStart}`)
       .then(res => { if (!cancelled) setRenewPricePreview(res); })
       .catch(() => { if (!cancelled) setRenewPricePreview(null); });
     return () => { cancelled = true; };
-  }, [renewModal, renewForm.startDate]);
+  }, [renewModal, renewStart, renewForm.roomId]);
 
   const renew = useMutation({
     mutationFn: ({ id, data }) => api.post(`/tenants/${id}/renew`, data),
@@ -93,12 +123,15 @@ export default function Tenants() {
 
   const openRenew = (t) => {
     const defaultStart = t.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-    setRenewForm({ startDate: defaultStart, durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
+    setRenewForm({ startDate: defaultStart, durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '', roomId: t.roomId });
+    setRenewAvailRooms([]);
+    setRenewCurrentFree(true);
     setRenewModal(t);
   };
 
   const handleRenewSubmit = (e) => {
     e.preventDefault();
+    if (!renewForm.roomId) { alert('Pilih kamar dulu. Kamar saat ini sudah dibooking penghuni lain pada periode ini.'); return; }
     const body = { ...renewForm };
     body.durationMonths = Number(body.durationMonths) || 1;
     body.discountAmount = body.discountAmount === '' ? 0 : Number(body.discountAmount);
@@ -459,6 +492,37 @@ export default function Tenants() {
                 </div>
               </div>
 
+              {/* Pilih Kamar — wajib pindah kalau kamar lama sudah dibooking di periode ini */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Kamar {renewChecking && <span className="text-xs text-slate-400">(mengecek ketersediaan…)</span>}
+                </label>
+                {!renewCurrentFree && (
+                  <div className="mb-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Kamar {renewModal.room?.number} sudah dibooking penghuni lain pada periode ini.
+                    Pilih kamar lain yang kosong untuk perpanjangan.
+                  </div>
+                )}
+                <select value={renewForm.roomId} onChange={e => setRenewForm({ ...renewForm, roomId: e.target.value })}
+                  className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required>
+                  <option value="">Pilih kamar kosong…</option>
+                  {renewCurrentFree && (
+                    <option value={renewModal.roomId}>Kamar {renewModal.room?.number} (tetap di kamar ini)</option>
+                  )}
+                  {renewAvailRooms
+                    .filter(r => r.id !== renewModal.roomId)
+                    .map(r => (
+                      <option key={r.id} value={r.id}>Kamar {r.number} — {r.tier?.name || r.type} ({rupiah(r.price)})</option>
+                    ))}
+                </select>
+                {renewForm.roomId && renewForm.roomId !== renewModal.roomId && (
+                  <p className="text-xs text-blue-600 mt-1">Penghuni akan dipindahkan ke kamar ini.</p>
+                )}
+                {!renewChecking && renewAvailRooms.filter(r => r.id !== renewModal.roomId).length === 0 && !renewCurrentFree && (
+                  <p className="text-xs text-rose-600 mt-1">Tidak ada kamar kosong pada periode ini. Coba ubah tanggal/durasi.</p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Diskon (opsional)</label>
                 <div className="grid grid-cols-2 gap-4">
@@ -511,10 +575,10 @@ export default function Tenants() {
                 </div>
               )}
 
-              <button type="submit" disabled={renew.isPending}
+              <button type="submit" disabled={renew.isPending || renewChecking || !renewForm.roomId}
                 className="w-full py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                 {renew.isPending && <Loader2 size={18} className="animate-spin" />}
-                Perpanjang Kontrak
+                {renewForm.roomId && renewForm.roomId !== renewModal.roomId ? 'Perpanjang & Pindah Kamar' : 'Perpanjang Kontrak'}
               </button>
             </form>
           </div>

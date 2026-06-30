@@ -131,3 +131,23 @@ penghuni (RESERVED = sudah DP belum lunas) DAN status kamar (dibooking).
 - Istilah kamar diubah dari "Dipesan" menjadi **"Dibooking"** di laporan,
   Dashboard, dan halaman Kamar — supaya tidak rancu dengan status penghuni
   "Dipesan". Sekarang "Dipesan" HANYA untuk penghuni; "Dibooking" untuk kamar.
+
+## 10. Perpanjang: pilih kamar bila kamar lama sudah dibooking
+
+**Kasus:** Aurelia Chang (A-04) sudah Selesai, dan A-04 sudah dibooking Lana
+Malika untuk periode berikutnya. Kalau Aurelia mau perpanjang, dia TIDAK bisa di
+A-04 lagi — harus pindah ke kamar kosong.
+
+**Perbaikan:**
+- Modal **Perpanjang** kini punya pemilih **Kamar**. Sistem otomatis mengecek
+  apakah kamar saat ini bebas pada periode perpanjangan baru:
+  - Bila bebas → default tetap di kamar itu.
+  - Bila sudah dibooking penghuni lain → muncul peringatan & daftar **kamar
+    kosong** untuk dipilih (pindah kamar).
+- Endpoint baru `GET /api/rooms/available?start=&end=&excludeTenantId=` mengembalikan
+  kamar yang benar-benar bebas pada rentang tanggal (deteksi tumpang tindih periode).
+- Backend `renew` memvalidasi ulang ketersediaan (anti bentrok) dan menolak
+  (409) bila kamar tidak tersedia, sambil menyarankan ganti kamar. Saat pindah,
+  penghuni & tagihan otomatis dipindah ke kamar baru, harga mengikuti kamar baru.
+- Tanggal keluar dianggap eksklusif: kamar bisa langsung ditempati penghuni
+  berikutnya di hari yang sama tanpa dianggap bentrok.

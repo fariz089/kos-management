@@ -3,6 +3,8 @@ const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
 const { tenantStage } = require('../utils/lifecycle');
+const { isRoomFree } = require('../utils/availability');
+const { reconcileRoomStatus } = require('../utils/reconcile');
 
 const router = express.Router();
 
@@ -344,19 +346,53 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
       discountType = 'TOTAL',
       depositAmount,
       startDate: startDateInput,   // tanggal mulai perpanjangan (opsional)
+      roomId: targetRoomId,        // kamar tujuan (opsional; default = kamar saat ini)
     } = req.body;
 
     const months = Math.max(1, Number(durationMonths) || 1);
 
-    // Harga sewa: pakai override, atau harga dinamis berdasarkan tanggal perpanjangan.
     // Tanggal mulai: pakai input manual, kalau kosong pakai tanggal keluar saat ini.
     const startDate = startDateInput
       ? new Date(startDateInput)
       : (tenant.moveOutDate || new Date());
+
+    // Tanggal keluar baru
+    const newMoveOut = new Date(startDate);
+    newMoveOut.setMonth(newMoveOut.getMonth() + months);
+
+    // Kamar tujuan: default kamar sekarang. Boleh pindah ke kamar lain.
+    const roomId = targetRoomId || tenant.roomId;
+    const isMovingRoom = roomId !== tenant.roomId;
+
+    // ── VALIDASI BENTROK KAMAR ──────────────────────────────────
+    // Cek kamar tujuan apakah bebas pada periode perpanjangan baru, abaikan
+    // penghuni ini sendiri. Kalau bentrok (mis. kamar lama sudah dibooking
+    // penghuni lain), tolak dengan pesan jelas — wajib pilih kamar kosong.
+    const { free, conflict } = await isRoomFree(roomId, startDate, newMoveOut, tenant.id);
+    if (!free) {
+      const ci = conflict
+        ? ` Kamar sudah dibooking ${conflict.name} (${new Date(conflict.moveInDate).toLocaleDateString('id-ID')}–${new Date(conflict.moveOutDate).toLocaleDateString('id-ID')}).`
+        : '';
+      return res.status(409).json({
+        error: `Kamar tidak tersedia pada periode perpanjangan.${ci} Silakan pilih kamar lain yang kosong.`,
+        needRoomChange: true,
+        conflict,
+      });
+    }
+
+    // Verifikasi kamar tujuan milik owner ini (kalau pindah).
+    if (isMovingRoom) {
+      const targetRoom = await prisma.room.findFirst({
+        where: { id: roomId, property: { ownerId: req.user.id } },
+      });
+      if (!targetRoom) return res.status(400).json({ error: 'Kamar tujuan tidak valid.' });
+    }
+
+    // Harga sewa: pakai override, atau harga dinamis kamar TUJUAN pada tanggal mulai.
     let monthlyRent = Number(rentAmount) || 0;
     let priceInfo = null;
     if (!monthlyRent) {
-      priceInfo = await priceForRoom(tenant.roomId, startDate);
+      priceInfo = await priceForRoom(roomId, startDate);
       monthlyRent = priceInfo.price;
     }
 
@@ -372,20 +408,19 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
     const paid = Math.round(Math.min(dp, contractTotal));
     const sisa = Math.max(0, contractTotal - paid);
 
-    // Update tanggal keluar baru
-    const newMoveOut = new Date(startDate);
-    newMoveOut.setMonth(newMoveOut.getMonth() + months);
+    // durationMonths AKUMULATIF hanya bila tetap di kamar yang sama. Kalau PINDAH
+    // kamar, anggap kontrak baru (durationMonths = months) supaya jumlah tagihan
+    // konsisten per kamar.
+    const newDuration = isMovingRoom ? months : (tenant.durationMonths || 1) + months;
 
-    // durationMonths AKUMULATIF: kontrak total = bulan lama + bulan perpanjangan.
-    // Ini menjaga konsistensi jumlah tagihan sewa (1 tagihan per periode kontrak)
-    // sehingga validasi "Tambah Tagihan" & rekonsiliasi tidak salah hitung.
-    const newDuration = (tenant.durationMonths || 1) + months;
-
-    // Update tenant
+    // Update tenant (termasuk pindah kamar bila perlu)
     const newStatus = sisa > 0 ? 'PENDING' : 'ACTIVE';
+    const oldRoomId = tenant.roomId;
     await prisma.tenant.update({
       where: { id: tenant.id },
       data: {
+        roomId,
+        moveInDate: isMovingRoom ? startDate : tenant.moveInDate,
         moveOutDate: newMoveOut,
         durationMonths: newDuration,
         discountAmount: discount,
@@ -396,16 +431,20 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
       },
     });
 
-    // Update room status
-    await prisma.room.update({
-      where: { id: tenant.roomId },
-      data: { status: newStatus === 'ACTIVE' ? 'OCCUPIED' : 'RESERVED' },
-    });
+    // Selaraskan status kamar (lama & baru) via reconcile supaya konsisten.
+    await reconcileRoomStatus(req.user.id).catch(() => {});
+
+    // Ambil nomor kamar tujuan (bisa beda dari kamar lama kalau pindah).
+    const targetRoom = isMovingRoom
+      ? await prisma.room.findUnique({ where: { id: roomId }, select: { number: true } })
+      : { number: tenant.room.number };
+    const roomNumber = targetRoom?.number || tenant.room.number;
 
     // Buat tagihan sewa perpanjangan
     const dueDate = new Date(startDate); // jatuh tempo = tanggal mulai perpanjang
     const billStatus = paid >= contractTotal ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
     const durasiTxt = months > 1 ? `${months} bulan` : '1 bulan';
+    const pindahTxt = isMovingRoom ? ` (pindah dari Kamar ${tenant.room.number})` : '';
     const diskonTxt = discount > 0
       ? ` (diskon Rp ${discount.toLocaleString('id-ID')}${dType === 'PER_MONTH' ? '/bln' : ''})`
       : '';
@@ -419,9 +458,9 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
         dueDate,
         ...(billStatus === 'PAID' ? { paidAt: new Date() } : {}),
         status: billStatus,
-        description: `Perpanjang sewa ${durasiTxt} - Kamar ${tenant.room.number}${diskonTxt}`,
+        description: `Perpanjang sewa ${durasiTxt} - Kamar ${roomNumber}${pindahTxt}${diskonTxt}`,
         tenantId: tenant.id,
-        roomId: tenant.roomId,
+        roomId,
       },
     });
 
@@ -436,7 +475,7 @@ router.post('/:id/renew', authMiddleware, async (req, res) => {
         `Kontrak kos kamu telah diperpanjang. 🎉`,
         ``,
         `📋 *Rincian:*`,
-        `• Kamar: ${tenant.room.number}`,
+        `• Kamar: ${roomNumber}${isMovingRoom ? ` (pindah dari ${tenant.room.number})` : ''}`,
         `• Periode: ${mulaiStr} s/d ${selesaiStr}`,
         `• Sewa: Rp ${monthlyRent.toLocaleString('id-ID')}/bln × ${months} bln`,
       ];

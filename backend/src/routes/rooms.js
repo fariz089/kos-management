@@ -4,6 +4,7 @@ const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
 const { tenantStage } = require('../utils/lifecycle');
 const { reconcileRoomStatus } = require('../utils/reconcile');
+const { availableRoomsForRange } = require('../utils/availability');
 
 const router = express.Router();
 
@@ -76,6 +77,21 @@ router.get('/', authMiddleware, async (req, res) => {
     }));
 
     res.json(enriched);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/rooms/available?start=YYYY-MM-DD&end=YYYY-MM-DD&excludeTenantId=...
+// Daftar kamar yang BEBAS pada rentang tanggal tertentu (untuk pindah/perpanjang).
+router.get('/available', authMiddleware, async (req, res) => {
+  try {
+    const { start, end, excludeTenantId } = req.query;
+    if (!start) return res.status(400).json({ error: 'start wajib diisi' });
+    const startDate = new Date(start);
+    const endDate = end ? new Date(end) : null;
+    const rooms = await availableRoomsForRange(req.user.id, startDate, endDate, excludeTenantId || null);
+    res.json(rooms);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
