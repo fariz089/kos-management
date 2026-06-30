@@ -2,6 +2,8 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { priceForRoom } = require('../utils/pricing');
+const { reconcileBilling } = require('../utils/reconcile');
+const { generateReport } = require('../utils/report');
 
 const router = express.Router();
 
@@ -26,6 +28,11 @@ async function sendWhatsApp(phone, message) {
 // GET /api/bills
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    // Auto-rapikan data tagihan tiap kali daftar dimuat (idempoten & ringan):
+    // hapus tagihan hantu/ganda, selaraskan DP, koreksi jatuh tempo. Tidak perlu
+    // tombol manual — data selalu konsisten dengan kontrak penghuni.
+    await reconcileBilling(req.user.id).catch((e) => console.error('reconcile (bills) skip:', e.message));
+
     const { status, tenantId, month, year } = req.query;
     const where = {
       room: { property: { ownerId: req.user.id } },
@@ -55,6 +62,21 @@ router.get('/', authMiddleware, async (req, res) => {
     res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/bills/report.pdf — Laporan lengkap kos dalam format PDF.
+// Ditempatkan sebelum route lain agar tidak bentrok dengan pola :id.
+router.get('/report.pdf', authMiddleware, async (req, res) => {
+  try {
+    // Rapikan dulu supaya laporan akurat.
+    await reconcileBilling(req.user.id).catch(() => {});
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Laporan-Kos.pdf"`);
+    await generateReport(req.user.id, res);
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+    else res.end();
   }
 });
 
@@ -200,79 +222,13 @@ router.post('/generate-monthly', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/bills/reconcile — Bersihkan & selaraskan tagihan dengan data penghuni.
-// Memperbaiki 3 hal tanpa perlu SQL manual:
-//   1. Hapus tagihan "hantu" (generate bulanan) untuk penghuni yang belum masuk.
-//   2. Hapus tagihan sewa GANDA di luar jumlah bulan kontrak (durationMonths).
-//   3. Selaraskan paidAmount tagihan DP dengan tenant.depositAmount (beda ≤ 5 rupiah).
+// POST /api/bills/reconcile — (opsional) jalankan rekonsiliasi manual.
+// Catatan: rekonsiliasi juga berjalan OTOMATIS tiap kali daftar tagihan/dashboard
+// dimuat, jadi endpoint ini hanya untuk keperluan administratif/debug.
 router.post('/reconcile', authMiddleware, async (req, res) => {
   try {
-    const tenants = await prisma.tenant.findMany({
-      where: { room: { property: { ownerId: req.user.id } } },
-      include: { bills: { orderBy: { createdAt: 'asc' } } },
-    });
-
-    const removedPhantom = [];
-    const removedDuplicate = [];
-    const fixedDp = [];
-
-    for (const t of tenants) {
-      const rentBills = t.bills.filter((b) => b.type === 'RENT' && b.status !== 'CANCELLED');
-
-      // 1) Tagihan hantu: belum dibayar, pola generate bulanan, & penghuni belum masuk.
-      const phantomPattern = /^Sewa kamar .+ — \d+\/\d{4}$/;
-      for (const b of rentBills) {
-        const isPhantomDesc = phantomPattern.test(b.description || '');
-        const unpaid = (b.paidAmount || 0) === 0 && ['UNPAID', 'OVERDUE'].includes(b.status);
-        const notYetMovedIn = t.moveInDate && new Date(t.moveInDate) > new Date(b.dueDate);
-        if (isPhantomDesc && unpaid && notYetMovedIn) {
-          await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
-          await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
-          removedPhantom.push({ tenant: t.name, billId: b.id });
-        }
-      }
-
-      // 2) Tagihan sewa ganda di luar kontrak. Sisakan yang terlama (kontrak asli).
-      const remainingRent = (await prisma.bill.findMany({
-        where: { tenantId: t.id, type: 'RENT', status: { not: 'CANCELLED' } },
-        orderBy: { createdAt: 'asc' },
-      }));
-      const maxBills = t.durationMonths || 1;
-      if (remainingRent.length > maxBills) {
-        const excess = remainingRent.slice(maxBills);
-        for (const b of excess) {
-          // Hanya hapus duplikat yang BELUM dibayar (lindungi yang sudah ada uang masuk).
-          if ((b.paidAmount || 0) === 0) {
-            await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
-            await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
-            removedDuplicate.push({ tenant: t.name, billId: b.id });
-          }
-        }
-      }
-
-      // 3) Selaraskan DP: paidAmount tagihan PARTIAL ke tenant.depositAmount (beda kecil).
-      if (t.depositAmount != null) {
-        const partial = remainingRent.find((b) => b.status === 'PARTIAL');
-        if (partial) {
-          const diff = Math.abs((partial.paidAmount || 0) - t.depositAmount);
-          if (diff >= 1 && diff <= 5) {
-            await prisma.bill.update({
-              where: { id: partial.id },
-              data: { paidAmount: t.depositAmount },
-            });
-            fixedDp.push({ tenant: t.name, from: partial.paidAmount, to: t.depositAmount });
-          }
-        }
-      }
-    }
-
-    res.json({
-      message: 'Rekonsiliasi selesai',
-      removedPhantom: removedPhantom.length,
-      removedDuplicate: removedDuplicate.length,
-      fixedDp: fixedDp.length,
-      detail: { removedPhantom, removedDuplicate, fixedDp },
-    });
+    const result = await reconcileBilling(req.user.id);
+    res.json({ message: 'Rekonsiliasi selesai', ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

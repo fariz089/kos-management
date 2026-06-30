@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw, Banknote, Wallet, Sparkles } from 'lucide-react';
+import { Plus, Trash2, X, Loader2, Receipt, CreditCard, RefreshCw, Banknote, Wallet, FileText } from 'lucide-react';
 
 const BILL_TYPES = ['RENT', 'ELECTRIC', 'WATER', 'WIFI', 'OTHER'];
 const STATUS_LABELS = {
@@ -51,20 +51,31 @@ export default function Bills() {
     },
   });
 
-  const reconcile = useMutation({
-    mutationFn: () => api.post('/bills/reconcile'),
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ['bills'] });
-      qc.invalidateQueries({ queryKey: ['tenants'] });
-      alert(
-        `Tagihan dirapikan:\n` +
-        `• ${data.removedPhantom} tagihan hantu dihapus (penghuni belum masuk)\n` +
-        `• ${data.removedDuplicate} tagihan sewa ganda dihapus\n` +
-        `• ${data.fixedDp} DP diselaraskan dengan data penghuni`
-      );
-    },
-    onError: (error) => alert('Gagal merapikan: ' + error.message),
-  });
+  const [reportLoading, setReportLoading] = useState(false);
+  const downloadReport = async () => {
+    setReportLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/bills/report.pdf', {
+        headers: { ...(token && { Authorization: `Bearer ${token}` }) },
+      });
+      if (!res.ok) throw new Error('Gagal membuat laporan');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const today = new Date().toISOString().slice(0, 10);
+      a.download = `Laporan-Kos-${today}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Gagal membuat laporan PDF: ' + e.message);
+    } finally {
+      setReportLoading(false);
+    }
+  };
 
   const payBill = useMutation({
     mutationFn: (billId) => api.post('/payments/create', { billId }),
@@ -163,10 +174,10 @@ export default function Bills() {
           <p className="text-slate-500 text-sm mt-1">Kelola tagihan penghuni</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => { if (confirm('Rapikan tagihan?\n\nIni akan:\n• Hapus tagihan untuk penghuni yang belum masuk\n• Hapus tagihan sewa ganda di luar kontrak\n• Selaraskan DP dengan data penghuni\n\nTagihan yang sudah ada pembayaran TIDAK akan dihapus.')) reconcile.mutate(); }} disabled={reconcile.isPending}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-all disabled:opacity-50">
-            {reconcile.isPending ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-            Rapikan Tagihan
+          <button onClick={() => downloadReport()} disabled={reportLoading}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-700 text-white rounded-xl text-sm font-medium hover:bg-slate-800 transition-all disabled:opacity-50">
+            {reportLoading ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+            Laporan PDF
           </button>
           <button onClick={() => genMonthly.mutate()} disabled={genMonthly.isPending}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-all disabled:opacity-50">

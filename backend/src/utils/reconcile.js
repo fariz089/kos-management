@@ -1,0 +1,100 @@
+const prisma = require('./prisma');
+
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+
+/**
+ * Rekonsiliasi tagihan dengan data penghuni. IDEMPOTEN & ringan — aman dipanggil
+ * berulang (mis. tiap kali dashboard/bills dimuat) supaya data selalu konsisten
+ * tanpa perlu tombol manual "Rapikan".
+ *
+ * Memperbaiki 4 hal:
+ *   1. Hapus tagihan "hantu" (pola generate bulanan) untuk penghuni yang belum masuk
+ *      & belum dibayar.
+ *   2. Hapus tagihan sewa GANDA di luar jumlah bulan kontrak (durationMonths)
+ *      yang belum ada pembayaran.
+ *   3. Selaraskan paidAmount tagihan PARTIAL dengan tenant.depositAmount (beda ≤ 5 rupiah).
+ *   4. Koreksi dueDate tagihan yang lebih awal dari tanggal masuk penghuni →
+ *      set ke tanggal masuk (sesuai aturan: jatuh tempo dihitung saat penghuni masuk).
+ *
+ * @param {string} ownerId
+ * @returns {Promise<{removedPhantom:number, removedDuplicate:number, fixedDp:number, fixedDueDate:number}>}
+ */
+async function reconcileBilling(ownerId) {
+  const tenants = await prisma.tenant.findMany({
+    where: { room: { property: { ownerId } } },
+    include: { bills: { orderBy: { createdAt: 'asc' } } },
+  });
+
+  let removedPhantom = 0;
+  let removedDuplicate = 0;
+  let fixedDp = 0;
+  let fixedDueDate = 0;
+  const phantomPattern = /^Sewa kamar .+ — \d+\/\d{4}$/;
+
+  for (const t of tenants) {
+    const moveIn = t.moveInDate ? startOfDay(t.moveInDate) : null;
+    const rentBills = t.bills.filter((b) => b.type === 'RENT' && b.status !== 'CANCELLED');
+
+    // 1) Tagihan hantu
+    for (const b of rentBills) {
+      const isPhantomDesc = phantomPattern.test(b.description || '');
+      const unpaid = (b.paidAmount || 0) === 0 && ['UNPAID', 'OVERDUE'].includes(b.status);
+      const notYetMovedIn = moveIn && moveIn > new Date(b.dueDate);
+      if (isPhantomDesc && unpaid && notYetMovedIn) {
+        await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
+        await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
+        removedPhantom += 1;
+      }
+    }
+
+    // 2) Tagihan sewa ganda di luar kontrak
+    const remainingRent = await prisma.bill.findMany({
+      where: { tenantId: t.id, type: 'RENT', status: { not: 'CANCELLED' } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const maxBills = t.durationMonths || 1;
+    if (remainingRent.length > maxBills) {
+      const excess = remainingRent.slice(maxBills);
+      for (const b of excess) {
+        if ((b.paidAmount || 0) === 0) {
+          await prisma.payment.deleteMany({ where: { billId: b.id } }).catch(() => {});
+          await prisma.bill.delete({ where: { id: b.id } }).catch(() => {});
+          removedDuplicate += 1;
+        }
+      }
+    }
+
+    // 3) Selaraskan DP (beda kecil 1-5 rupiah)
+    if (t.depositAmount != null) {
+      const partial = remainingRent.find((b) => b.status === 'PARTIAL');
+      if (partial) {
+        const diff = Math.abs((partial.paidAmount || 0) - t.depositAmount);
+        if (diff >= 1 && diff <= 5) {
+          await prisma.bill.update({
+            where: { id: partial.id },
+            data: { paidAmount: t.depositAmount },
+          });
+          fixedDp += 1;
+        }
+      }
+    }
+
+    // 4) Koreksi dueDate yang lebih awal dari tanggal masuk → set = tanggal masuk.
+    //    Jatuh tempo seharusnya = saat penghuni masuk, bukan tanggal seed lama.
+    if (moveIn) {
+      for (const b of remainingRent) {
+        if (b.dueDate && startOfDay(b.dueDate) < moveIn) {
+          await prisma.bill.update({
+            where: { id: b.id },
+            data: { dueDate: moveIn },
+          });
+          fixedDueDate += 1;
+        }
+      }
+    }
+  }
+
+  return { removedPhantom, removedDuplicate, fixedDp, fixedDueDate };
+}
+
+module.exports = { reconcileBilling };

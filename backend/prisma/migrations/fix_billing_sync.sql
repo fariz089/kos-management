@@ -69,4 +69,16 @@ WHERE b."tenantId" = t."id"
   AND t."depositAmount" IS NOT NULL
   AND ABS(b."paidAmount" - t."depositAmount") BETWEEN 1 AND 5;
 
+-- ── 4. Koreksi jatuh tempo: dueDate tidak boleh lebih awal dari tanggal masuk ──
+--    Aturan: kewajiban bayar jatuh tempo saat penghuni MASUK. Tagihan dengan
+--    dueDate lebih awal dari moveInDate (mis. sisa seed lama) dikoreksi ke
+--    tanggal masuk, supaya tidak salah tampil "menunggak" sebelum penghuni masuk.
+UPDATE "Bill" b
+SET "dueDate" = t."moveInDate"
+FROM "Tenant" t
+WHERE b."tenantId" = t."id"
+  AND b."status" <> 'CANCELLED'
+  AND t."moveInDate" IS NOT NULL
+  AND b."dueDate" < date_trunc('day', t."moveInDate");
+
 COMMIT;

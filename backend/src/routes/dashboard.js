@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../utils/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { tenantStage } = require('../utils/lifecycle');
+const { reconcileBilling } = require('../utils/reconcile');
 
 const router = express.Router();
 
@@ -12,6 +13,8 @@ const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); retur
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const ownerId = req.user.id;
+    // Auto-rapikan data sebelum hitung ringkasan (idempoten & ringan).
+    await reconcileBilling(ownerId).catch((e) => console.error('reconcile (dashboard) skip:', e.message));
     const now = new Date();
     const today = startOfDay(now);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -36,7 +39,7 @@ router.get('/', authMiddleware, async (req, res) => {
       prisma.bill.findMany({
         where: { room: { property: { ownerId } } },
         include: {
-          tenant: { select: { name: true, phone: true } },
+          tenant: { select: { name: true, phone: true, moveInDate: true } },
           room: { select: { number: true } },
         },
       }),
@@ -128,13 +131,21 @@ router.get('/', authMiddleware, async (req, res) => {
           });
         }
 
-        // Jatuh tempo (lewat tanggal & belum lunas)
-        if (b.dueDate && new Date(b.dueDate) < now) {
+        // Jatuh tempo (lewat tanggal & belum lunas) — TAPI hanya kalau penghuni
+        // sudah benar-benar masuk. Sesuai aturan: kewajiban bayar baru "jatuh tempo"
+        // saat tanggal masuk tiba. Penghuni yang baru masuk 20 hari lagi belum
+        // boleh dianggap menunggak walau dueDate tagihannya tertulis lebih awal.
+        const tenantMovedIn = !b.tenant?.moveInDate || startOfDay(b.tenant.moveInDate) <= today;
+        // Tanggal jatuh tempo efektif = yang paling lambat antara dueDate & tanggal masuk.
+        const effectiveDue = b.tenant?.moveInDate && startOfDay(b.tenant.moveInDate) > new Date(b.dueDate)
+          ? startOfDay(b.tenant.moveInDate)
+          : (b.dueDate ? new Date(b.dueDate) : null);
+        if (tenantMovedIn && effectiveDue && effectiveDue < now) {
           overdueAmount += remaining;
           overdueBills.push({
             id: b.id, tenant: b.tenant?.name || 'N/A', phone: b.tenant?.phone,
             room: b.room?.number || '-', type: b.type,
-            amount: b.amount, paid, remaining, dueDate: b.dueDate,
+            amount: b.amount, paid, remaining, dueDate: effectiveDue,
           });
         }
       }
