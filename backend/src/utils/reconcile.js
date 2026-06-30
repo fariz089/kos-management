@@ -80,17 +80,30 @@ async function reconcileBilling(ownerId) {
       }
     }
 
-    // 4) Koreksi dueDate yang lebih awal dari tanggal masuk → set = tanggal masuk.
-    //    Jatuh tempo seharusnya = saat penghuni masuk, bukan tanggal seed lama.
+    // 4) Koreksi jatuh tempo tagihan sewa PERIODE PERTAMA → harus = tanggal masuk.
+    //    Aturan kos:
+    //      • Sewa periode pertama  : jatuh tempo = tanggal MASUK (moveInDate).
+    //          mis. masuk 1 Agustus → wajib lunas 1 Agustus.
+    //      • Tagihan PERPANJANGAN  : jatuh tempo = tanggal mulai perpanjangan,
+    //          sudah benar dari endpoint /renew → JANGAN diubah.
+    //
+    //    Catatan penting: koreksi dilakukan dua arah (baik dueDate yang lebih
+    //    AWAL maupun lebih AKHIR dari tanggal masuk), karena data seed/import
+    //    lama memakai tanggal hard-coded (mis. 10 Jun / 4 Agu) yang justru
+    //    sering LEBIH AKHIR dari tanggal masuk. Versi lama hanya mengoreksi
+    //    yang lebih awal sehingga kasus ini lolos dan jatuh tempo tetap salah.
     if (moveIn) {
-      for (const b of remainingRent) {
-        if (b.dueDate && startOfDay(b.dueDate) < moveIn) {
-          await prisma.bill.update({
-            where: { id: b.id },
-            data: { dueDate: moveIn },
-          });
-          fixedDueDate += 1;
-        }
+      // Tagihan periode pertama = RENT paling awal dibuat yang BUKAN perpanjangan.
+      const firstPeriod = remainingRent.find(
+        (b) => !String(b.description || '').startsWith('Perpanjang')
+      );
+      if (firstPeriod && firstPeriod.dueDate &&
+          startOfDay(firstPeriod.dueDate).getTime() !== moveIn.getTime()) {
+        await prisma.bill.update({
+          where: { id: firstPeriod.id },
+          data: { dueDate: moveIn },
+        });
+        fixedDueDate += 1;
       }
     }
   }

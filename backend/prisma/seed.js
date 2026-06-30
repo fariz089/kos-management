@@ -150,7 +150,8 @@ async function main() {
     if (hasDP) {
       // Tagihan kontrak dengan DP sebagai pembayaran sebagian (kurang bayar).
       const billStatus = sisa > 0 ? 'PARTIAL' : 'PAID';
-      const due = new Date(td.moveInDate); due.setDate(due.getDate() + 3);
+      // Jatuh tempo sewa periode pertama = tanggal masuk (wajib lunas saat masuk).
+      const due = new Date(td.moveInDate);
       await prisma.bill.create({
         data: {
           type: 'RENT',
@@ -171,16 +172,17 @@ async function main() {
         await prisma.room.update({ where: { id: room.id }, data: { status: 'RESERVED' } }).catch(() => {});
       }
     } else {
-      // Tagihan lunas bulan berjalan (perilaku lama).
+      // Tagihan lunas periode pertama. Jatuh tempo = tanggal masuk penghuni
+      // (bukan tanggal hard-coded), sesuai aturan kos.
       await prisma.bill.create({
         data: {
           type: 'RENT',
           amount: room.price,
           paidAmount: room.price,
-          dueDate: new Date(2026, 5, 10), // June 10, 2026
+          dueDate: new Date(td.moveInDate),
           status: 'PAID',
-          paidAt: new Date(2026, 5, 1),
-          description: `Sewa kamar ${td.roomNumber} — Juni 2026`,
+          paidAt: new Date(td.moveInDate),
+          description: `Sewa kamar ${td.roomNumber} — sewa pertama`,
           tenantId: tenant.id,
           roomId: room.id,
         },
