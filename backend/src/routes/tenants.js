@@ -111,12 +111,12 @@ router.post('/', authMiddleware, async (req, res) => {
     // Hitung total kontrak setelah diskon
     //  - TOTAL     : potong sekali dari keseluruhan  → (sewa*bulan) - diskon
     //  - PER_MONTH : potong tiap bulan               → (sewa - diskon) * bulan
-    const grossTotal = monthlyRent * months;
+    const grossTotal = Math.round(monthlyRent * months);
     const contractTotal = dType === 'PER_MONTH'
-      ? Math.max(0, (monthlyRent - discount) * months)
-      : Math.max(0, grossTotal - discount);
+      ? Math.max(0, Math.round((monthlyRent - discount) * months))
+      : Math.max(0, Math.round(grossTotal - discount));
 
-    const dp = depositAmount ? Number(depositAmount) : null;
+    const dp = depositAmount ? Math.round(Number(depositAmount)) : null;
 
     // ── Penentuan status TERSIMPAN (sederhana; tahap kaya dihitung helper) ──
     // Aturan: simpan ACTIVE hanya bila penghuni benar-benar masuk SEKARANG & lunas.
@@ -156,12 +156,11 @@ router.post('/', authMiddleware, async (req, res) => {
     const createdBills = [];
     if (createBills) {
       const moveIn = new Date(moveInDate);
-      const dueDate = new Date(moveIn);
-      dueDate.setDate(dueDate.getDate() + 3); // jatuh tempo 3 hari setelah tanggal masuk
+      const dueDate = new Date(moveIn); // jatuh tempo = tanggal masuk (harus lunas sebelum masuk)
 
       // Satu tagihan SEWA untuk seluruh kontrak (sudah termasuk diskon).
       // DP dianggap pembayaran sebagian (paidAmount). Sisa = contractTotal - dp.
-      const paid = dp ? Math.min(dp, contractTotal) : 0;
+      const paid = dp ? Math.round(Math.min(dp, contractTotal)) : 0;
       const billStatus = paid >= contractTotal ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
 
       const durasiTxt = months > 1 ? `${months} bulan` : 'bulan pertama';
@@ -323,6 +322,126 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     }
 
     res.json({ message: 'Penghuni dihapus' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/tenants/:id/renew — Perpanjang kontrak penghuni
+// Body: { durationMonths, rentAmount?, discountAmount?, discountType?, depositAmount? }
+router.post('/:id/renew', authMiddleware, async (req, res) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      include: { room: { include: { property: true } } },
+    });
+    if (!tenant) return res.status(404).json({ error: 'Penghuni tidak ditemukan' });
+
+    const {
+      durationMonths = 1,
+      rentAmount,
+      discountAmount = 0,
+      discountType = 'TOTAL',
+      depositAmount,
+    } = req.body;
+
+    const months = Math.max(1, Number(durationMonths) || 1);
+
+    // Harga sewa: pakai override, atau harga dinamis berdasarkan tanggal perpanjangan
+    const startDate = tenant.moveOutDate || new Date();
+    let monthlyRent = Number(rentAmount) || 0;
+    let priceInfo = null;
+    if (!monthlyRent) {
+      priceInfo = await priceForRoom(tenant.roomId, startDate);
+      monthlyRent = priceInfo.price;
+    }
+
+    const discount = Number(discountAmount) > 0 ? Number(discountAmount) : 0;
+    const dType = discount > 0 ? (discountType || 'TOTAL') : null;
+
+    const grossTotal = Math.round(monthlyRent * months);
+    const contractTotal = dType === 'PER_MONTH'
+      ? Math.max(0, Math.round((monthlyRent - discount) * months))
+      : Math.max(0, Math.round(grossTotal - discount));
+
+    const dp = depositAmount ? Math.round(Number(depositAmount)) : 0;
+    const paid = Math.round(Math.min(dp, contractTotal));
+    const sisa = Math.max(0, contractTotal - paid);
+
+    // Update tanggal keluar baru
+    const newMoveOut = new Date(startDate);
+    newMoveOut.setMonth(newMoveOut.getMonth() + months);
+
+    // Update tenant
+    const newStatus = sisa > 0 ? 'PENDING' : 'ACTIVE';
+    await prisma.tenant.update({
+      where: { id: tenant.id },
+      data: {
+        moveOutDate: newMoveOut,
+        durationMonths: months,
+        discountAmount: discount,
+        discountType: dType,
+        depositAmount: dp || null,
+        depositPaidAt: dp ? new Date() : null,
+        status: newStatus,
+      },
+    });
+
+    // Update room status
+    await prisma.room.update({
+      where: { id: tenant.roomId },
+      data: { status: newStatus === 'ACTIVE' ? 'OCCUPIED' : 'RESERVED' },
+    });
+
+    // Buat tagihan sewa perpanjangan
+    const dueDate = new Date(startDate); // jatuh tempo = tanggal mulai perpanjang
+    const billStatus = paid >= contractTotal ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
+    const durasiTxt = months > 1 ? `${months} bulan` : '1 bulan';
+    const diskonTxt = discount > 0
+      ? ` (diskon Rp ${discount.toLocaleString('id-ID')}${dType === 'PER_MONTH' ? '/bln' : ''})`
+      : '';
+
+    const rentBill = await prisma.bill.create({
+      data: {
+        type: 'RENT',
+        amount: contractTotal,
+        discount,
+        paidAmount: paid,
+        dueDate,
+        ...(billStatus === 'PAID' ? { paidAt: new Date() } : {}),
+        status: billStatus,
+        description: `Perpanjang sewa ${durasiTxt} - Kamar ${tenant.room.number}${diskonTxt}`,
+        tenantId: tenant.id,
+        roomId: tenant.roomId,
+      },
+    });
+
+    // WhatsApp notification
+    if (tenant.phone) {
+      const mulaiStr = new Date(startDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      const selesaiStr = newMoveOut.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      const lines = [
+        `🔄 *Perpanjangan Kos — ${tenant.room.property?.name || 'Andhata Boarding House'}*`,
+        ``,
+        `Halo ${tenant.name},`,
+        `Kontrak kos kamu telah diperpanjang. 🎉`,
+        ``,
+        `📋 *Rincian:*`,
+        `• Kamar: ${tenant.room.number}`,
+        `• Periode: ${mulaiStr} s/d ${selesaiStr}`,
+        `• Sewa: Rp ${monthlyRent.toLocaleString('id-ID')}/bln × ${months} bln`,
+      ];
+      if (discount > 0) lines.push(`• Diskon: Rp ${discount.toLocaleString('id-ID')}${dType === 'PER_MONTH' ? '/bln' : ''}`);
+      lines.push(`• Total: Rp ${contractTotal.toLocaleString('id-ID')}`);
+      if (dp) {
+        lines.push(`• DP dibayar: Rp ${dp.toLocaleString('id-ID')}`);
+        lines.push(`• *Sisa kurang bayar: Rp ${sisa.toLocaleString('id-ID')}*`);
+      }
+      lines.push(``, `Terima kasih! 🙏`);
+      sendWhatsApp(tenant.phone, lines.join('\n'));
+    }
+
+    res.json({ tenant: { ...tenant, moveOutDate: newMoveOut, status: newStatus }, bill: rentBill, contractTotal, priceInfo });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

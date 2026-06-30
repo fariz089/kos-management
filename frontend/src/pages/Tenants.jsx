@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Plus, Pencil, Trash2, X, Loader2, Users, Phone, Mail } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Loader2, Users, Phone, Mail, RefreshCw } from 'lucide-react';
 
 const empty = {
   name: '', phone: '', email: '', ktpNumber: '', roomId: '',
@@ -62,6 +62,62 @@ export default function Tenants() {
     mutationFn: (id) => api.del(`/tenants/${id}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); qc.invalidateQueries({ queryKey: ['rooms'] }); },
   });
+
+  // ── Perpanjang (Renew) ─────────────────────────────────────
+  const [renewModal, setRenewModal] = useState(null);
+  const [renewForm, setRenewForm] = useState({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
+  const [renewPricePreview, setRenewPricePreview] = useState(null);
+
+  // Fetch harga untuk perpanjangan
+  useEffect(() => {
+    if (!renewModal) { setRenewPricePreview(null); return; }
+    let cancelled = false;
+    const startDate = renewModal.moveOutDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    api.get(`/pricing/preview?roomId=${renewModal.roomId}&date=${startDate}`)
+      .then(res => { if (!cancelled) setRenewPricePreview(res); })
+      .catch(() => { if (!cancelled) setRenewPricePreview(null); });
+    return () => { cancelled = true; };
+  }, [renewModal]);
+
+  const renew = useMutation({
+    mutationFn: ({ id, data }) => api.post(`/tenants/${id}/renew`, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenants'] });
+      qc.invalidateQueries({ queryKey: ['rooms'] });
+      qc.invalidateQueries({ queryKey: ['bills'] });
+      setRenewModal(null);
+      alert('Perpanjangan berhasil! Tagihan baru telah dibuat.');
+    },
+    onError: (error) => alert('Gagal perpanjang: ' + error.message),
+  });
+
+  const openRenew = (t) => {
+    setRenewForm({ durationMonths: '1', rentAmount: '', discountAmount: '', discountType: 'TOTAL', depositAmount: '' });
+    setRenewModal(t);
+  };
+
+  const handleRenewSubmit = (e) => {
+    e.preventDefault();
+    const body = { ...renewForm };
+    body.durationMonths = Number(body.durationMonths) || 1;
+    body.discountAmount = body.discountAmount === '' ? 0 : Number(body.discountAmount);
+    if (!body.discountAmount) body.discountType = null;
+    if (body.rentAmount === '' || body.rentAmount == null) delete body.rentAmount;
+    else body.rentAmount = Number(body.rentAmount);
+    body.depositAmount = body.depositAmount === '' ? null : Number(body.depositAmount);
+    renew.mutate({ id: renewModal.id, data: body });
+  };
+
+  // Renew preview calculations
+  const renewMonthly = Number(renewForm.rentAmount) || Number(renewPricePreview?.price) || 0;
+  const renewMonths = Math.max(1, Number(renewForm.durationMonths) || 1);
+  const renewDiscount = Number(renewForm.discountAmount) || 0;
+  const renewDp = Number(renewForm.depositAmount) || 0;
+  const renewGross = renewMonthly * renewMonths;
+  const renewTotal = renewForm.discountType === 'PER_MONTH'
+    ? Math.max(0, (renewMonthly - renewDiscount) * renewMonths)
+    : Math.max(0, renewGross - renewDiscount);
+  const renewSisa = Math.max(0, renewTotal - renewDp);
 
   const openAdd = () => { setForm(empty); setModal('add'); };
   const openEdit = (t) => {
@@ -163,6 +219,9 @@ export default function Tenants() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="inline-flex gap-1">
+                        {(t.stage === 'FINISHED' || t.stage === 'ACTIVE') && (
+                          <button onClick={() => openRenew(t)} title="Perpanjang kontrak" className="p-2 hover:bg-blue-50 rounded-lg"><RefreshCw size={15} className="text-blue-600" /></button>
+                        )}
                         <button onClick={() => openEdit(t)} className="p-2 hover:bg-slate-100 rounded-lg"><Pencil size={15} className="text-slate-500" /></button>
                         <button onClick={() => { if (confirm('Hapus penghuni ini?')) del.mutate(t.id); }} className="p-2 hover:bg-red-50 rounded-lg"><Trash2 size={15} className="text-red-500" /></button>
                       </div>
@@ -342,6 +401,106 @@ export default function Tenants() {
                 className="w-full py-3 bg-emerald-600 text-white rounded-xl font-semibold hover:bg-emerald-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                 {save.isPending && <Loader2 size={18} className="animate-spin" />}
                 {modal === 'add' ? 'Tambah' : 'Simpan'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Perpanjang */}
+      {renewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setRenewModal(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl max-h-[90vh] overflow-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-slate-900">Perpanjang Kontrak</h2>
+              <button onClick={() => setRenewModal(null)} className="p-1 hover:bg-slate-100 rounded-lg"><X size={20} /></button>
+            </div>
+            <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-sm mb-4">
+              <p className="font-medium text-blue-800">{renewModal.name}</p>
+              <p className="text-blue-600 text-xs mt-0.5">Kamar {renewModal.room?.number || '-'} · Kontrak berakhir {renewModal.moveOutDate ? new Date(renewModal.moveOutDate).toLocaleDateString('id-ID') : '-'}</p>
+            </div>
+
+            {renewPricePreview && (
+              <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-3 text-sm mb-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600">Harga sewa{renewPricePreview.tierCode ? ` (Tipe ${renewPricePreview.tierCode})` : ''}</span>
+                  <span className="font-semibold text-emerald-700">{rupiah(renewPricePreview.price)}/bln</span>
+                </div>
+                {renewPricePreview.label && <p className="text-xs text-emerald-600 mt-0.5">{renewPricePreview.label}</p>}
+              </div>
+            )}
+
+            <form onSubmit={handleRenewSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Lama Perpanjang (bulan)</label>
+                  <input type="number" min="1" value={renewForm.durationMonths} onChange={e => setRenewForm({ ...renewForm, durationMonths: e.target.value })}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Sewa/bln (override)</label>
+                  <input type="number" value={renewForm.rentAmount} onChange={e => setRenewForm({ ...renewForm, rentAmount: e.target.value })}
+                    placeholder={renewPricePreview ? Number(renewPricePreview.price).toLocaleString('id-ID') : 'Otomatis'}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Diskon (opsional)</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="number" value={renewForm.discountAmount} onChange={e => setRenewForm({ ...renewForm, discountAmount: e.target.value })}
+                    placeholder="0" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                  <select value={renewForm.discountType} onChange={e => setRenewForm({ ...renewForm, discountType: e.target.value })}
+                    disabled={!renewForm.discountAmount}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                    <option value="TOTAL">Potong total</option>
+                    <option value="PER_MONTH">Potong /bulan</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">DP / Uang Muka (opsional)</label>
+                <input type="number" value={renewForm.depositAmount} onChange={e => setRenewForm({ ...renewForm, depositAmount: e.target.value })}
+                  placeholder="Kosongkan jika lunas langsung" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+              </div>
+
+              {renewMonthly > 0 && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm space-y-1.5">
+                  <p className="font-semibold text-slate-700 mb-2">Ringkasan Perpanjangan</p>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Sewa {rupiah(renewMonthly)} × {renewMonths} bln</span>
+                    <span>{rupiah(renewGross)}</span>
+                  </div>
+                  {renewDiscount > 0 && (
+                    <div className="flex justify-between text-rose-600">
+                      <span>Diskon</span>
+                      <span>− {rupiah(renewForm.discountType === 'PER_MONTH' ? renewDiscount * renewMonths : renewDiscount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-semibold text-slate-800 pt-1.5 border-t border-slate-200">
+                    <span>Total</span>
+                    <span>{rupiah(renewTotal)}</span>
+                  </div>
+                  {renewDp > 0 && (
+                    <>
+                      <div className="flex justify-between text-emerald-600">
+                        <span>DP dibayar</span>
+                        <span>− {rupiah(renewDp)}</span>
+                      </div>
+                      <div className={`flex justify-between font-bold pt-1.5 border-t border-slate-200 ${renewSisa > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        <span>{renewSisa > 0 ? 'Sisa kurang bayar' : 'Lunas'}</span>
+                        <span>{rupiah(renewSisa)}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <button type="submit" disabled={renew.isPending}
+                className="w-full py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+                {renew.isPending && <Loader2 size={18} className="animate-spin" />}
+                Perpanjang Kontrak
               </button>
             </form>
           </div>

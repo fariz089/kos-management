@@ -59,9 +59,26 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 // POST /api/bills — Create bill(s)
+// Validates against tenant's contract to prevent duplicate/excess bills
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const { tenantId, roomId, type, amount, dueDate, description } = req.body;
+
+    // Validasi: untuk tagihan RENT, cek apakah sudah ada tagihan RENT yang cukup
+    if (type === 'RENT' && tenantId) {
+      const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+      if (tenant) {
+        const maxBills = tenant.durationMonths || 1;
+        const existingRentBills = await prisma.bill.count({
+          where: { tenantId, type: 'RENT', status: { not: 'CANCELLED' } },
+        });
+        if (existingRentBills >= maxBills) {
+          return res.status(400).json({
+            error: `Penghuni ini sudah memiliki ${existingRentBills} tagihan sewa (kontrak ${maxBills} bulan). Tidak bisa menambah tagihan sewa lagi. Gunakan fitur "Perpanjang" di halaman Penghuni untuk memperpanjang kontrak.`,
+          });
+        }
+      }
+    }
 
     const bill = await prisma.bill.create({
       data: {
@@ -73,6 +90,30 @@ router.post('/', authMiddleware, async (req, res) => {
         roomId,
       },
     });
+
+    // Sync: update tenant outstanding jika tagihan baru berpengaruh
+    if (tenantId) {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        include: { bills: { select: { amount: true, paidAmount: true, status: true } } },
+      });
+      if (tenant) {
+        const totalOutstanding = tenant.bills.reduce((sum, b) => {
+          if (b.status === 'CANCELLED') return sum;
+          return sum + Math.max(0, b.amount - (b.paidAmount || 0));
+        }, 0);
+        // Jika ada outstanding dan tenant ACTIVE, set ke PENDING agar lifecycle benar
+        if (totalOutstanding > 0 && tenant.status === 'ACTIVE') {
+          // Jangan ubah status kalau tenant sedang tinggal (moveIn <= hari ini <= moveOut)
+          const today = new Date(); today.setHours(0, 0, 0, 0);
+          const moveIn = tenant.moveInDate ? new Date(tenant.moveInDate) : null;
+          if (moveIn) moveIn.setHours(0, 0, 0, 0);
+          const isLiving = moveIn && moveIn <= today;
+          // Tidak mengubah status jika sudah tinggal — biarkan lifecycle helper yang handle
+        }
+      }
+    }
+
     res.status(201).json(bill);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -85,7 +126,6 @@ router.post('/generate-monthly', authMiddleware, async (req, res) => {
     const now = new Date();
     const month = req.body.month || now.getMonth() + 1; // 1-indexed
     const year = req.body.year || now.getFullYear();
-    const dueDate = new Date(year, month - 1, 10); // Due tanggal 10
 
     const activeTenants = await prisma.tenant.findMany({
       where: {
@@ -116,6 +156,10 @@ router.post('/generate-monthly', authMiddleware, async (req, res) => {
           const p = await priceForRoom(tenant.roomId, tenant.moveInDate);
           rentAmount = p.price;
         } catch (e) { /* fallback ke room.price */ }
+
+        // Due date = tanggal masuk penghuni di bulan ini (anniversary)
+        const moveInDay = tenant.moveInDate ? new Date(tenant.moveInDate).getDate() : 1;
+        const dueDate = new Date(year, month - 1, moveInDay);
 
         const bill = await prisma.bill.create({
           data: {
@@ -177,7 +221,7 @@ router.post('/:id/mark-paid', authMiddleware, async (req, res) => {
 
     const bill = await prisma.bill.update({
       where: { id: req.params.id },
-      data: { status: 'PAID', paidAt: new Date(), paymentMethod: method, paidAmount: undefined },
+      data: { status: 'PAID', paidAt: new Date(), paymentMethod: method },
       include: { tenant: true, room: { include: { property: true } } },
     });
 

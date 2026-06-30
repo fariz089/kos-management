@@ -33,7 +33,8 @@ export default function Bills() {
 
   const create = useMutation({
     mutationFn: (d) => api.post('/bills', d),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['bills'] }); setModal(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['bills'] }); qc.invalidateQueries({ queryKey: ['tenants'] }); setModal(null); },
+    onError: (error) => alert('Gagal menambah tagihan: ' + error.message),
   });
 
   const del = useMutation({
