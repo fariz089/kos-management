@@ -31,6 +31,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      TZ: Asia/Jakarta
       PORT: 4000
       DATABASE_URL: postgresql://${DB_USER:-kos_admin}:${DB_PASSWORD:-changeme_in_production}@db:5432/${DB_NAME:-kos_management}?schema=public
       JWT_SECRET: ${JWT_SECRET:-change_this_jwt_secret}
@@ -129,6 +130,7 @@ services:
     command: gateway run
     shm_size: "1g"
     environment:
+      TZ: Asia/Jakarta
       # LLM Provider
       OPENROUTER_API_KEY: ${LLM_API_KEY:-}
       # Dashboard
